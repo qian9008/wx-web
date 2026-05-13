@@ -79,29 +79,69 @@ export const useAccountStore = defineStore('account', {
     async syncFullContactList(uuid: string, sessionKey: string) {
       try {
         console.log(`[Account] 开始同步账号 ${uuid} 的全量通讯录...`);
-        const res: any = await messageApi.getContactList(sessionKey, 0, 0);
-        const data = res.Data || res;
         
-        let rawList: any = [];
-        if (Array.isArray(data)) {
-          rawList = data;
-        } else if (data && typeof data === 'object') {
-          rawList = data.UserNameList || data.userNameList || data.ContactList || data.contactList || [];
+        let currentSeq = 0;
+        let currentRoomSeq = 0;
+        let allCleanIds: string[] = [];
+        let hasMore = true;
+        let safetyCounter = 0;
+
+        while (hasMore && safetyCounter < 50) {
+          safetyCounter++;
+          const res: any = await messageApi.getContactList(sessionKey, currentSeq, currentRoomSeq);
+          console.log(`[Account] getContactList (Seq: ${currentSeq}) 原始响应:`, res);
+          
+          const data = res.Data || res;
+          let rawList: any = [];
+          
+          if (data && typeof data === 'object') {
+            const cl = data.ContactList || data.contactList;
+            if (Array.isArray(cl)) {
+              rawList = cl;
+            } else if (cl && typeof cl === 'object') {
+              rawList = cl.MemberList || cl.memberList || cl.UserNameList || cl.userNameList || Object.values(cl).find(v => Array.isArray(v)) || [];
+            } else {
+              rawList = data.UserNameList || data.userNameList || [];
+            }
+
+            const nextSeq = data.CurrentWxcontactSeq || data.currentWxcontactSeq || (cl && (cl.CurrentWxcontactSeq || cl.currentWxcontactSeq)) || 0;
+            const nextRoomSeq = data.CurrentChatRoomContactSeq || data.currentChatRoomContactSeq || (cl && (cl.CurrentChatRoomContactSeq || cl.currentChatRoomContactSeq)) || 0;
+            
+            if ((nextSeq === currentSeq && nextRoomSeq === currentRoomSeq) || (nextSeq === 0 && nextRoomSeq === 0)) {
+              hasMore = false;
+            }
+            
+            currentSeq = nextSeq;
+            currentRoomSeq = nextRoomSeq;
+            
+            console.log(`[Account] 进度: Seq=${currentSeq}, RoomSeq=${currentRoomSeq}`);
+          } else {
+            hasMore = false;
+          }
+
+          const userIds = Array.isArray(rawList) ? rawList : (rawList ? [rawList] : []);
+          const cleanIds = userIds.map((id: any) => {
+            if (typeof id === 'string') return id;
+            if (id && typeof id === 'object') {
+              return id.str || id.Str || id.UserName || id.userName || id.wxid || '';
+            }
+            return '';
+          }).filter(id => !!id && typeof id === 'string');
+
+          allCleanIds = [...new Set([...allCleanIds, ...cleanIds])];
+          console.log(`[Account] 当前已累计提取 ID: ${allCleanIds.length}`);
         }
 
-        // 强制确保是数组
-        const userIds = Array.isArray(rawList) ? rawList : [rawList];
+        console.log(`[Account] 账号 ${uuid} 共提取到 ${allCleanIds.length} 个有效 ID`);
 
-        // 统一提取 ID 字符串
-        const cleanIds = userIds.map((id: any) => 
-          typeof id === 'string' ? id : (id.str || id.UserName || id.userName || id.wxid || '')
-        ).filter(id => !!id);
-
-        console.log(`[Account] 账号 ${uuid} 共有 ${cleanIds.length} 个联系人待同步`);
+        if (allCleanIds.length === 0) {
+          console.warn(`[Account] 账号 ${uuid} 未获取到任何联系人 ID`);
+          return;
+        }
 
         const batchSize = 50;
-        for (let i = 0; i < cleanIds.length; i += batchSize) {
-          const batch = cleanIds.slice(i, i + batchSize);
+        for (let i = 0; i < allCleanIds.length; i += batchSize) {
+          const batch = allCleanIds.slice(i, i + batchSize);
           const cached = await contactCache.getMultiple(batch);
           const missingIds = batch.filter(id => !cached[id]);
 
@@ -112,15 +152,25 @@ export const useAccountStore = defineStore('account', {
               const details = dData.contactList || dData.ContactList || [];
               
               for (const d of details) {
-                const wid = d.userName?.str || d.UserName?.str || d.wxid || d.userName || d.UserName || '';
-                if (wid) {
+                let wid = '';
+                if (typeof d.userName === 'object') {
+                  wid = d.userName.str || d.userName.Str || '';
+                } else if (typeof d.UserName === 'object') {
+                  wid = d.UserName.str || d.UserName.Str || '';
+                } else {
+                  wid = d.userName || d.UserName || d.wxid || '';
+                }
+                
+                if (wid && typeof wid === 'string') {
                   await contactCache.set(wid, d);
                 }
               }
-              console.log(`[Account] 已同步 ${i + details.length}/${cleanIds.length}`);
+              console.log(`[Account] 详情同步进度: ${Math.min(i + batchSize, allCleanIds.length)}/${allCleanIds.length}`);
             } catch (e) {
-              console.error(`[Account] 同步批次 ${i} 失败:`, e);
+              console.error(`[Account] 同步详情批次 ${i} 失败:`, e);
             }
+          } else {
+            console.log(`[Account] 详情批次 ${i} 已在缓存中，跳过`);
           }
         }
         console.log(`[Account] 账号 ${uuid} 通讯录同步完成`);

@@ -24,11 +24,22 @@ export class IMService {
       this.pendingQueue = [];
 
       try {
-        // 1. 同步补录 - 必须传入该账号正确的 license (key)
-        const res: any = await messageApi.syncMsg(key, 0);
-        if (res && res.AddMsgList) {
-          res.AddMsgList.forEach((m: any) => this.onMessageCallback(m));
+        // 1. 同步补录 - 尝试多次同步直到没有更多消息
+        console.log(`[${this.accountUuid}] 开始同步历史消息...`);
+        let hasMore = true;
+        let syncCount = 0;
+        while (hasMore && syncCount < 5) { // 最多连续同步5次防止死循环
+          const res: any = await messageApi.syncMsg(key, 0);
+          const msgList = res?.AddMsgList || res?.Data?.AddMsgList || [];
+          if (msgList.length > 0) {
+            console.log(`[${this.accountUuid}] 同步到 ${msgList.length} 条消息`);
+            msgList.forEach((m: any) => this.onMessageCallback(m));
+            syncCount++;
+          } else {
+            hasMore = false;
+          }
         }
+        console.log(`[${this.accountUuid}] 历史消息同步完成`);
       } catch (err) {
         console.error('同步失败', err);
       } finally {

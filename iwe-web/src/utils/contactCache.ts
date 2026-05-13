@@ -132,6 +132,33 @@ export const contactCache = {
     });
   },
 
+  async getMultiple(wxids: string[]) {
+    const db = await this.init();
+    return new Promise<Record<string, any>>((resolve) => {
+      const transaction = db.transaction(STORE_NAME, 'readonly');
+      const store = transaction.objectStore(STORE_NAME);
+      const results: Record<string, any> = {};
+      let count = 0;
+
+      if (wxids.length === 0) return resolve({});
+
+      wxids.forEach(wxid => {
+        const request = store.get(wxid);
+        request.onsuccess = () => {
+          if (request.result) {
+            results[wxid] = request.result.detail;
+          }
+          count++;
+          if (count === wxids.length) resolve(results);
+        };
+        request.onerror = () => {
+          count++;
+          if (count === wxids.length) resolve(results);
+        };
+      });
+    });
+  },
+
   async getAll() {
     const db = await this.init();
     return new Promise<any[]>((resolve) => {
@@ -144,13 +171,41 @@ export const contactCache = {
   },
 
   async set(wxid: string, detail: any) {
+    if (!wxid || typeof wxid !== 'string') {
+      console.warn('[DB] 尝试保存无效的 wxid:', wxid);
+      return false;
+    }
     const db = await this.init();
     return new Promise((resolve) => {
       const transaction = db.transaction(STORE_NAME, 'readwrite');
       const store = transaction.objectStore(STORE_NAME);
       store.put({ wxid, detail, timestamp: Date.now() });
       transaction.oncomplete = () => resolve(true);
+      transaction.onerror = (e) => {
+        console.error('[DB] 保存联系人失败:', e);
+        resolve(false);
+      };
     });
+  },
+
+  async getCount() {
+    const db = await this.init();
+    return new Promise((resolve) => {
+      const transaction = db.transaction(STORE_NAME, 'readonly');
+      const store = transaction.objectStore(STORE_NAME);
+      const request = store.count();
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => resolve(0);
+    });
+  },
+
+  async getEstimatedSize() {
+    // 粗略估算：平均每个联系人详情 2KB
+    const count = await this.getCount() as number;
+    const sizeInBytes = count * 2048; 
+    if (sizeInBytes < 1024) return `${sizeInBytes} B`;
+    if (sizeInBytes < 1024 * 1024) return `${(sizeInBytes / 1024).toFixed(2)} KB`;
+    return `${(sizeInBytes / (1024 * 1024)).toFixed(2)} MB`;
   },
 
   async clearAll() {

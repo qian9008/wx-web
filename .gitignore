@@ -2,7 +2,7 @@
 node_modules/
 vendor/
 .vite/
-
+node_modules/
 # 编译产物
 bin/
 out/
