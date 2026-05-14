@@ -1,8 +1,9 @@
 const DB_NAME = 'iwe_cache';
-const DB_VERSION = 4; // 升级版本以增加会话表
+const DB_VERSION = 5; // 升级版本以增加头像表
 const STORE_NAME = 'contacts';
 const MSG_STORE = 'messages';
 const CONV_STORE = 'conversations';
+const AVATAR_STORE = 'avatars';
 
 export const contactCache = {
   db: null as IDBDatabase | null,
@@ -11,7 +12,8 @@ export const contactCache = {
     if (this.db) {
       if (this.db.objectStoreNames.contains(STORE_NAME) && 
           this.db.objectStoreNames.contains(MSG_STORE) &&
-          this.db.objectStoreNames.contains(CONV_STORE)) {
+          this.db.objectStoreNames.contains(CONV_STORE) &&
+          this.db.objectStoreNames.contains(AVATAR_STORE)) {
         return this.db;
       }
       this.db.close();
@@ -39,6 +41,10 @@ export const contactCache = {
         if (!db.objectStoreNames.contains(CONV_STORE)) {
           // keyPath 使用 accountUuid + partnerId 的组合
           db.createObjectStore(CONV_STORE, { keyPath: 'uid_partner' });
+        }
+
+        if (!db.objectStoreNames.contains(AVATAR_STORE)) {
+          db.createObjectStore(AVATAR_STORE, { keyPath: 'url' });
         }
       };
 
@@ -191,11 +197,11 @@ export const contactCache = {
     });
   },
 
-  async getCount() {
+  async getCount(storeName = STORE_NAME) {
     const db = await this.init();
-    return new Promise((resolve) => {
-      const transaction = db.transaction(STORE_NAME, 'readonly');
-      const store = transaction.objectStore(STORE_NAME);
+    return new Promise<number>((resolve) => {
+      const transaction = db.transaction(storeName, 'readonly');
+      const store = transaction.objectStore(storeName);
       const request = store.count();
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => resolve(0);
@@ -203,22 +209,114 @@ export const contactCache = {
   },
 
   async getEstimatedSize() {
-    // 粗略估算：平均每个联系人详情 2KB
-    const count = await this.getCount() as number;
-    const sizeInBytes = count * 2048; 
+    // 更加细致的估算逻辑
+    const contactCount = await this.getCount(STORE_NAME) as number;
+    const msgCount = await this.getCount(MSG_STORE) as number;
+    const convCount = await this.getCount(CONV_STORE) as number;
+
+    // 估算标准：
+    // 联系人详情：~3KB (包含多个字段、头像URL、备注等)
+    // 消息：~1KB (文本消息、元数据、状态)
+    // 会话：~0.5KB
+    const sizeInBytes = (contactCount * 3072) + (msgCount * 1024) + (convCount * 512);
+    
+    return this.formatSize(sizeInBytes);
+  },
+
+  async getActualSize(): Promise<string> {
+    if (!window.navigator || !window.navigator.storage || !window.navigator.storage.estimate) {
+      return "浏览器不支持";
+    }
+    try {
+      const estimate = await window.navigator.storage.estimate();
+      return this.formatSize(estimate.usage || 0);
+    } catch (e) {
+      console.error('[DB] 获取实际空间占用失败:', e);
+      return "获取失败";
+    }
+  },
+
+  async getAvatarCacheSize(): Promise<string> {
+    if (!window.caches) return "0 B";
+    try {
+      const cacheNames = await window.caches.keys();
+      let totalSize = 0;
+      for (const name of cacheNames) {
+        const cache = await window.caches.open(name);
+        const keys = await cache.keys();
+        for (const key of keys) {
+          const response = await cache.match(key);
+          if (response) {
+            const blob = await response.blob();
+            totalSize += blob.size;
+          }
+        }
+      }
+      return this.formatSize(totalSize);
+    } catch (e) {
+      return "无法计算";
+    }
+  },
+
+  async clearAvatarCache() {
+    if (!window.caches) return true;
+    const names = await window.caches.keys();
+    await Promise.all(names.map(name => window.caches.delete(name)));
+    return true;
+  },
+
+  formatSize(sizeInBytes: number): string {
     if (sizeInBytes < 1024) return `${sizeInBytes} B`;
     if (sizeInBytes < 1024 * 1024) return `${(sizeInBytes / 1024).toFixed(2)} KB`;
     return `${(sizeInBytes / (1024 * 1024)).toFixed(2)} MB`;
   },
 
+  async clearStore(storeName: string) {
+    const db = await this.init();
+    return new Promise((resolve) => {
+      const transaction = db.transaction(storeName, 'readwrite');
+      const store = transaction.objectStore(storeName);
+      store.clear();
+      transaction.oncomplete = () => resolve(true);
+      transaction.onerror = (e) => {
+        console.error(`[DB] 清理表 ${storeName} 失败:`, e);
+        resolve(false);
+      };
+    });
+  },
+
   async clearAll() {
     const db = await this.init();
     return new Promise((resolve) => {
-      const transaction = db.transaction([STORE_NAME, MSG_STORE, CONV_STORE], 'readwrite');
+      const transaction = db.transaction([STORE_NAME, MSG_STORE, CONV_STORE, AVATAR_STORE], 'readwrite');
       transaction.objectStore(STORE_NAME).clear();
       transaction.objectStore(MSG_STORE).clear();
       transaction.objectStore(CONV_STORE).clear();
+      transaction.objectStore(AVATAR_STORE).clear();
       transaction.oncomplete = () => resolve(true);
+    });
+  },
+
+  // --- 头像静态化缓存 ---
+  async saveAvatar(url: string, blob: Blob) {
+    const db = await this.init();
+    return new Promise((resolve) => {
+      const transaction = db.transaction(AVATAR_STORE, 'readwrite');
+      const store = transaction.objectStore(AVATAR_STORE);
+      store.put({ url, blob, timestamp: Date.now() });
+      transaction.oncomplete = () => resolve(true);
+      transaction.onerror = () => resolve(false);
+    });
+  },
+
+  async getAvatar(url: string): Promise<Blob | null> {
+    const db = await this.init();
+    return new Promise((resolve) => {
+      const transaction = db.transaction(AVATAR_STORE, 'readonly');
+      const store = transaction.objectStore(AVATAR_STORE);
+      const request = store.get(url);
+      request.onsuccess = () => resolve(request.result?.blob || null);
+      request.onerror = () => resolve(null);
     });
   }
 };

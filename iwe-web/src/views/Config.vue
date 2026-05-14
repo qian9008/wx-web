@@ -28,7 +28,7 @@ const router = useRouter();
 const loading = ref(false);
 
 const form = reactive({
-  baseUrl: accountStore.baseUrl || 'http://192.168.50.188:8819',
+  baseUrl: accountStore.baseUrl || '',
   adminToken: accountStore.adminToken,
 });
 

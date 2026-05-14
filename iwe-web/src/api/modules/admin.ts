@@ -3,6 +3,9 @@ import request from '@/utils/request';
 export const adminApi = {
   // 允许显式传入 key 用于验证
   ping: (key?: string) => request.get('/admin/GetAuthKey', { params: key ? { key } : {} }),
+
+  // 获取在线账号列表
+  getOnlineAccounts: () => request.get('/admin/GetAuthKey'),
   
   getAuthKey: () => request.get('/admin/GetAuthKey'),
   

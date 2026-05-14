@@ -9,9 +9,16 @@ class GlobalSocketManager {
   private pollingTimers: Map<string, any> = new Map();
 
   public async registerAccount(uuid: string, key: string, currentWxid: string) {
+    if (!uuid) return;
+    
     const existing = this.connections.get(uuid);
     if (existing && existing.isConnected) {
       console.log(`[SocketManager] 账号 ${uuid} 已存在活跃连接`);
+      return;
+    }
+
+    // 正在连接中也跳过，防止 watch 快速连击
+    if (existing && (existing as any).isConnecting) {
       return;
     }
 
@@ -20,9 +27,18 @@ class GlobalSocketManager {
     }
 
     const accountStore = useAccountStore();
+    
+    // 鲁棒的 URL 转换
+    let wsBaseUrl = accountStore.baseUrl;
+    if (wsBaseUrl.startsWith('http')) {
+      wsBaseUrl = wsBaseUrl.replace('http', 'ws');
+    } else {
+      wsBaseUrl = `ws://${wsBaseUrl}`;
+    }
+    
     const service = new IMService(
       uuid,
-      `${accountStore.baseUrl.replace('http', 'ws')}/ws/GetSyncMsg`,
+      `${wsBaseUrl}/ws/GetSyncMsg`,
       (msg) => this.handleMessage(uuid, msg, currentWxid)
     );
 
@@ -75,7 +91,19 @@ class GlobalSocketManager {
 
   private handleMessage(uuid: string, msg: any, currentWxid: string) {
     const chatStore = useChatStore();
-    const msgId = msg.NewMsgId || msg.MsgId || msg.msg_id || msg.new_msg_id;
+    const accountStore = useAccountStore();
+    const msgId = msg.NewMsgId || msg.MsgId || msg.msg_id || msg.new_msg_id || msg.UUID;
+    
+    // 特殊处理 10001 类型：联系人更新同步
+    const rawType = Number(msg.Type || msg.MsgType || msg.msg_type || 0);
+    if (rawType === 10001 && msg.ModContacts) {
+      console.log(`[Socket:${uuid}] 收到联系人更新(10001)，正在同步到内存镜像`);
+      msg.ModContacts.forEach((contact: any) => {
+        const wxid = contact.userName?.str || contact.UserName?.str || contact.wxid || contact.userName;
+        if (wxid) accountStore.updateContact(wxid, contact);
+      });
+    }
+
     if (msgId && chatStore.msgIdSet.has(String(msgId))) return;
     
     const parsedMsg = MessageParser.parse(msg, currentWxid);
@@ -93,11 +121,20 @@ class GlobalSocketManager {
   private async syncHistory(uuid: string, key: string, currentWxid: string) {
     try {
       console.log(`[SocketManager:${uuid}] 正在同步历史消息...`);
+      
+      // 1. 调用补录历史消息接口 (NewSyncHistoryMessage)
+      const historyRes: any = await messageApi.syncHistoryMsg(key);
+      const historyList = this.extractMsgList(historyRes);
+      if (historyList.length > 0) {
+        console.log(`[SocketManager:${uuid}] 补录到 ${historyList.length} 条历史消息`);
+        historyList.forEach((m: any) => this.handleMessage(uuid, m, currentWxid));
+      }
+
+      // 2. 调用增量同步消息接口 (HttpSyncMsg)
       const res: any = await messageApi.syncMsg(key, 0);
       const msgList = this.extractMsgList(res);
-      
       if (msgList.length > 0) {
-        console.log(`[SocketManager:${uuid}] 同步到 ${msgList.length} 条消息`);
+        console.log(`[SocketManager:${uuid}] 同步到 ${msgList.length} 条增量消息`);
         msgList.forEach((m: any) => this.handleMessage(uuid, m, currentWxid));
       }
     } catch (e) {
@@ -108,12 +145,13 @@ class GlobalSocketManager {
   private extractMsgList(res: any): any[] {
     if (!res) return [];
     if (Array.isArray(res)) return res;
-    if (res.AddMsgList) return res.AddMsgList;
-    if (res.Data) {
-      if (Array.isArray(res.Data)) return res.Data;
-      if (res.Data.AddMsgList) return res.Data.AddMsgList;
-    }
-    return [];
+    
+    // 兼容 Data 结构
+    const data = res.Data || res.data || res;
+    if (Array.isArray(data)) return data;
+    
+    // 兼容多种列表键名
+    return data.AddMsgList || data.addMsgList || data.List || data.list || [];
   }
 }
 

@@ -6,6 +6,7 @@ export class IMService {
   private onMessageCallback: (msg: any) => void;
   public accountUuid: string;
   public isConnected = false;
+  public isConnecting = false;
   private heartbeatTimer: any = null;
 
   constructor(accountUuid: string, url: string, onMessage: (msg: any) => void) {
@@ -17,29 +18,38 @@ export class IMService {
   public connect(key: string) {
     const wsUrl = `${this.url}?key=${key}`;
     console.log(`[${this.accountUuid}] 正在建立 WebSocket 连接...`);
+    this.isConnecting = true;
     
     this.ws = new ReconnectingWebSocket(wsUrl);
 
     this.ws.onopen = () => {
       this.isConnected = true;
-      console.log(`[${this.accountUuid}] WebSocket 连接成功`);
+      this.isConnecting = false;
+      console.log(`✅ [${this.accountUuid}] WebSocket 成功建立连接`);
       this.startHeartbeat();
     };
 
     this.ws.onclose = (event) => {
       this.isConnected = false;
+      this.isConnecting = false;
       this.stopHeartbeat();
-      // 保留断开原因日志，便于后续排查稳定性问题
-      console.warn(`[${this.accountUuid}] WebSocket 连接断开:`, {
+      // 这里的 code 是排查问题的核心
+      console.warn(`❌ [${this.accountUuid}] WebSocket 连接已断开:`, {
         code: event.code,
-        reason: event.reason
+        reason: event.reason || '无明确原因',
+        wasClean: event.wasClean
       });
     };
 
-    this.ws.onerror = (event) => {
+    this.ws.onerror = (event: any) => {
       this.isConnected = false;
+      this.isConnecting = false;
       this.stopHeartbeat();
-      console.error(`[${this.accountUuid}] WebSocket 发生错误:`, event);
+      console.error(`[${this.accountUuid}] WebSocket 发生错误! 详细信息:`, {
+        url: this.ws?.url,
+        readyState: this.ws?.readyState,
+        event
+      });
     };
 
     this.ws.onmessage = (event) => {
