@@ -36,11 +36,7 @@ export const useChatStore = defineStore('chat', {
       if (this.msgIdSet.has(String(msg.id))) return;
       this.msgIdSet.add(String(msg.id));
 
-      const accountStore = useAccountStore();
-      const currentAccount = accountStore.accounts.find(a => a.uuid === accountUuid);
-      // 核心修复：使用真实的微信号进行身份判定，而不是 UUID
-      const myWxid = (currentAccount?.nickname || accountUuid).trim().toLowerCase();
-      
+      const myWxid = accountUuid.trim().toLowerCase();
       const fromId = msg.from.trim().toLowerCase();
       const toId = msg.to.trim().toLowerCase();
       
@@ -58,21 +54,30 @@ export const useChatStore = defineStore('chat', {
         return;
       }
 
+      console.log(`[Debug:ChatStore] 消息归类判定: myWxid=${myWxid}, from=${fromId}, to=${toId} -> partnerId=${partnerId}`);
+
       // 1. 持久化消息到 DB (dev 分支已在 contactCache 中禁用实际写入)
       await contactCache.saveMessage(accountUuid, msg);
 
-      // 2. 更新内存 Store (消息)
+      // 2. 更新内存 Store
       if (!this.accountMessages[accountUuid]) {
-        this.accountMessages = { ...this.accountMessages, [accountUuid]: {} };
+        this.accountMessages[accountUuid] = {};
       }
+      
+      // Pinia 对于深层嵌套的响应式对象，直接修改内层可能无法触发视图更新
+      // 必须浅拷贝外层触发 reactivity
       const messagesForAccount = { ...this.accountMessages[accountUuid] };
+      
       if (!messagesForAccount[partnerId]) {
         messagesForAccount[partnerId] = [];
       }
-      messagesForAccount[partnerId] = [...messagesForAccount[partnerId], msg];
-      this.accountMessages[accountUuid] = messagesForAccount;
       
-      // 3. 更新并持久化会话
+      messagesForAccount[partnerId] = [...messagesForAccount[partnerId], msg];
+      messagesForAccount[partnerId].sort((a, b) => a.time - b.time);
+      
+      this.accountMessages[accountUuid] = messagesForAccount;
+
+      // 3. 更新会话列表镜像 (upsert)
       await this.updateConversation(accountUuid, partnerId, msg);
     },
 

@@ -129,7 +129,7 @@ class GlobalSocketManager {
 
     if (msgId && chatStore.msgIdSet.has(String(msgId))) return;
     
-    const parsedMsg = MessageParser.parse(msg, currentWxid);
+    const parsedMsg = MessageParser.parse(msg, uuid); // 强制使用 uuid (即 qian9008) 作为 myWxid 传入解析器
     
     // 2. 拦截状态通知和其他非显示类消息
     if (parsedMsg.type === 'status_notify' || !parsedMsg.content && parsedMsg.type === 'unsupported') {
