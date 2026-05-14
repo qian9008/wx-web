@@ -78,45 +78,50 @@ export const useAccountStore = defineStore('account', {
 
     async syncFullContactList(uuid: string, sessionKey: string) {
       try {
-        console.log(`[Account] 开始同步账号 ${uuid} 的全量通讯录...`);
+        console.log(`[Account] 开始同步账号 ${uuid} 的全量通讯录 (含群聊)...`);
         
         let currentSeq = 0;
         let currentRoomSeq = 0;
         let allCleanIds: string[] = [];
-        let hasMore = true;
+        let hasMoreContacts = true;
+        let hasMoreRooms = true;
         let safetyCounter = 0;
 
-        while (hasMore && safetyCounter < 50) {
+        while ((hasMoreContacts || hasMoreRooms) && safetyCounter < 100) {
           safetyCounter++;
           const res: any = await messageApi.getContactList(sessionKey, currentSeq, currentRoomSeq);
-          console.log(`[Account] getContactList (Seq: ${currentSeq}) 原始响应:`, res);
+          console.log(`[Account] 分页同步 (C-Seq: ${currentSeq}, R-Seq: ${currentRoomSeq}) 原始响应:`, res);
           
           const data = res.Data || res;
           let rawList: any = [];
           
           if (data && typeof data === 'object') {
             const cl = data.ContactList || data.contactList;
-            if (Array.isArray(cl)) {
-              rawList = cl;
-            } else if (cl && typeof cl === 'object') {
-              rawList = cl.MemberList || cl.memberList || cl.UserNameList || cl.userNameList || Object.values(cl).find(v => Array.isArray(v)) || [];
-            } else {
-              rawList = data.UserNameList || data.userNameList || [];
+            // 提取所有可能的 ID 列表
+            const contactPart = Array.isArray(cl) ? cl : (cl?.MemberList || cl?.memberList || []);
+            const roomPart = data.ChatRoomContactList || data.chatRoomContactList || [];
+            const userPart = data.UserNameList || data.userNameList || [];
+            
+            rawList = [...contactPart, ...roomPart, ...userPart];
+            if (rawList.length === 0 && cl && typeof cl === 'object') {
+              rawList = Object.values(cl).find(v => Array.isArray(v)) || [];
             }
 
+            // 更新 Seq
             const nextSeq = data.CurrentWxcontactSeq || data.currentWxcontactSeq || (cl && (cl.CurrentWxcontactSeq || cl.currentWxcontactSeq)) || 0;
             const nextRoomSeq = data.CurrentChatRoomContactSeq || data.currentChatRoomContactSeq || (cl && (cl.CurrentChatRoomContactSeq || cl.currentChatRoomContactSeq)) || 0;
             
-            if ((nextSeq === currentSeq && nextRoomSeq === currentRoomSeq) || (nextSeq === 0 && nextRoomSeq === 0)) {
-              hasMore = false;
-            }
+            // 判断分页状态
+            hasMoreContacts = (nextSeq !== 0 && nextSeq !== currentSeq);
+            hasMoreRooms = (nextRoomSeq !== 0 && nextRoomSeq !== currentRoomSeq);
             
             currentSeq = nextSeq;
             currentRoomSeq = nextRoomSeq;
             
-            console.log(`[Account] 进度: Seq=${currentSeq}, RoomSeq=${currentRoomSeq}`);
+            console.log(`[Account] 进度更新: 正常联系人Seq=${currentSeq}, 群聊Seq=${currentRoomSeq}`);
           } else {
-            hasMore = false;
+            hasMoreContacts = false;
+            hasMoreRooms = false;
           }
 
           const userIds = Array.isArray(rawList) ? rawList : (rawList ? [rawList] : []);
@@ -132,48 +137,23 @@ export const useAccountStore = defineStore('account', {
           console.log(`[Account] 当前已累计提取 ID: ${allCleanIds.length}`);
         }
 
-        console.log(`[Account] 账号 ${uuid} 共提取到 ${allCleanIds.length} 个有效 ID`);
+        console.log(`[Account] 账号 ${uuid} 全量 ID 同步完成，共提取到 ${allCleanIds.length} 个 ID`);
 
-        if (allCleanIds.length === 0) {
-          console.warn(`[Account] 账号 ${uuid} 未获取到任何联系人 ID`);
-          return;
-        }
+        if (allCleanIds.length === 0) return;
 
-        const batchSize = 50;
+        const batchSize = 100; // 仅做 ID 索引占位
         for (let i = 0; i < allCleanIds.length; i += batchSize) {
           const batch = allCleanIds.slice(i, i + batchSize);
           const cached = await contactCache.getMultiple(batch);
-          const missingIds = batch.filter(id => !cached[id]);
-
-          if (missingIds.length > 0) {
-            try {
-              const detailRes: any = await messageApi.getContactDetailsList(sessionKey, missingIds);
-              const dData = detailRes.Data || detailRes;
-              const details = dData.contactList || dData.ContactList || [];
-              
-              for (const d of details) {
-                let wid = '';
-                if (typeof d.userName === 'object') {
-                  wid = d.userName.str || d.userName.Str || '';
-                } else if (typeof d.UserName === 'object') {
-                  wid = d.UserName.str || d.UserName.Str || '';
-                } else {
-                  wid = d.userName || d.UserName || d.wxid || '';
-                }
-                
-                if (wid && typeof wid === 'string') {
-                  await contactCache.set(wid, d);
-                }
-              }
-              console.log(`[Account] 详情同步进度: ${Math.min(i + batchSize, allCleanIds.length)}/${allCleanIds.length}`);
-            } catch (e) {
-              console.error(`[Account] 同步详情批次 ${i} 失败:`, e);
+          
+          for (const id of batch) {
+            if (!cached[id]) {
+              await contactCache.set(id, { userName: { str: id }, nickName: { str: id } });
             }
-          } else {
-            console.log(`[Account] 详情批次 ${i} 已在缓存中，跳过`);
           }
+          console.log(`[Account] 通讯录索引进度: ${Math.min(i + batchSize, allCleanIds.length)}/${allCleanIds.length}`);
         }
-        console.log(`[Account] 账号 ${uuid} 通讯录同步完成`);
+        console.log(`[Account] 账号 ${uuid} 通讯录索引同步完成`);
       } catch (err) {
         console.error(`[Account] 同步通讯录失败:`, err);
       }

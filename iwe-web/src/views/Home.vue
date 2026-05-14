@@ -63,10 +63,10 @@
             </a-avatar>
             <div class="info">
               <div class="title">
-                <span class="name">{{ conv.nickname }}</span>
+                <span class="name">{{ formatText(conv.nickname) }}</span>
                 <span class="time">{{ formatTime(conv.time) }}</span>
               </div>
-              <div class="desc">{{ conv.lastMsg }}</div>
+              <div class="desc">{{ formatText(conv.lastMsg) }}</div>
             </div>
           </div>
         </template>
@@ -117,7 +117,7 @@
                   <icon-image :size="32" style="color: #4e5969" />
                 </div>
               </div>
-              <div v-else class="content">{{ msg.content }}</div>
+              <div v-else class="content">{{ formatText(msg.content) }}</div>
               <div v-if="msg.isRevoked" class="revoked-tag">对方撤回了此消息（已拦截）</div>
             </div>
           </div>
@@ -177,7 +177,7 @@
               <a-descriptions title="本地缓存状态 (IndexedDB)" :column="1" bordered>
                 <a-descriptions-item label="数据库名称">iwe_cache</a-descriptions-item>
                 <a-descriptions-item label="已缓存联系人">{{ dbStats.count }} 人</a-descriptions-item>
-                <a-descriptions-item label="预估占用空间">{{ (dbStats.size / 1024 / 1024).toFixed(2) }} MB</a-descriptions-item>
+                <a-descriptions-item label="预估占用空间">{{ dbStats.size }}</a-descriptions-item>
               </a-descriptions>
               <div style="margin-top: 20px">
                 <a-popconfirm content="将清空所有已缓存的联系人昵称和头像，确认清空?" @ok="handleClearCache">
@@ -219,7 +219,7 @@ const contactList = ref<any[]>([]);
 const contactLoading = ref(false);
 const authKeys = ref<any[]>([]);
 const adminLoading = ref(false);
-const dbStats = ref({ count: 0, size: 0 });
+const dbStats = ref({ count: 0, size: '' as string | number });
 
 // 获取当前账号的会话列表，并自动补全头像/昵称
 const currentConversations = computed(() => {
@@ -238,7 +238,7 @@ watch(() => accountStore.activeAccountUuid, async (newUuid) => {
 watch(() => currentConversations.value, async (convs) => {
   for (const conv of convs) {
     if (!conv.avatar || conv.nickname === conv.wxid) {
-      const detail = await contactCache.get(conv.wxid);
+      const detail: any = await contactCache.get(conv.wxid);
       if (detail) {
         conv.nickname = detail.nickName || detail.NickName || conv.nickname;
         conv.avatar = detail.smallHeadImgUrl || detail.SmallHeadImgUrl || detail.headImgUrl || detail.HeadImgUrl || '';
@@ -264,17 +264,22 @@ watch(() => chatStore.activeId, async (newId) => {
     const accountUuid = accountStore.activeAccountUuid;
     const currentAcc = accountStore.accounts.find(a => a.uuid === accountUuid);
 
-    // 1. 被动加载联系人详情：如果缓存没有且是在线账号，则查询一次
-    const cached = await contactCache.get(newId);
-    if (!cached && currentAcc) {
+    // 1. 按需加载联系人详情（含头像）
+    const cached: any = await contactCache.get(newId);
+    const hasAvatar = cached && (cached.smallHeadImgUrl || cached.SmallHeadImgUrl || cached.headImgUrl || cached.HeadImgUrl);
+    
+    if (!hasAvatar && currentAcc) {
       try {
+        console.log(`[Home] 按需加载联系人详情: ${newId}`);
         const detailRes: any = await messageApi.getContactDetailsList(currentAcc.sessionKey, [newId]);
         const dData = detailRes.Data || detailRes;
         const details = dData.contactList || dData.ContactList || [];
         if (details.length > 0) {
           await contactCache.set(newId, details[0]);
         }
-      } catch (e) {}
+      } catch (e) {
+        console.error('[Home] 加载详情失败:', e);
+      }
     }
 
     // 2. 加载历史记录
@@ -427,69 +432,22 @@ const handleSwitchContact = async () => {
   const currentAcc = accountStore.accounts.find(a => a.uuid === accountUuid);
   if (!currentAcc) return;
 
+  // 1. 先从本地加载缓存，保证 UI 响应
+  const allCached: any = await contactCache.getAll();
+  if (allCached && allCached.length > 0) {
+    contactList.value = allCached;
+  }
+
+  // 2. 被动同步：点击图标时触发同步逻辑
   contactLoading.value = true;
   try {
-    const allCached: any = await contactCache.getAll();
-    if (allCached && allCached.length > 0) {
-      contactList.value = allCached;
-    }
-
-    const res: any = await messageApi.getContactList(currentAcc.sessionKey, 0, 0);
-    const data = res.Data || res;
+    console.log('[Home] 开始被动同步通讯录...');
+    // 调用 store 中的分页同步逻辑
+    await accountStore.syncFullContactList(currentAcc.uuid, currentAcc.sessionKey);
     
-    let userIds: any[] = [];
-    if (Array.isArray(data)) {
-      userIds = data;
-    } else if (data.UserNameList) {
-      userIds = data.UserNameList;
-    } else if (data.userNameList) {
-      userIds = data.userNameList;
-    } else if (data.ContactList) {
-      userIds = data.ContactList;
-    }
-
-    if (userIds.length > 0) {
-      const newList = userIds.map((id: any) => {
-        const wid = typeof id === 'string' ? id : (id.str || id.UserName || id.userName || id.wxid);
-        const existing = contactList.value.find(c => getContactId(c) === wid);
-        return existing || { userName: { str: wid } };
-      });
-      contactList.value = newList;
-
-      const batchSize = 50;
-      for (let i = 0; i < userIds.length; i += batchSize) {
-        const batchIds = userIds.slice(i, i + batchSize).map((id: any) => 
-          typeof id === 'string' ? id : (id.str || id.UserName || id.userName || id.wxid)
-        );
-        
-        const cachedResults: any = await contactCache.getMultiple(batchIds);
-        
-        batchIds.forEach((id: string) => {
-          if (cachedResults[id]) {
-            const idx = contactList.value.findIndex(item => getContactId(item) === id);
-            if (idx !== -1) contactList.value[idx] = cachedResults[id];
-          }
-        });
-
-        const missingIds = batchIds.filter((id: string) => !cachedResults[id]);
-        if (missingIds.length > 0) {
-          try {
-            const detailRes: any = await messageApi.getContactDetailsList(currentAcc.sessionKey, missingIds);
-            const dData = detailRes.Data || detailRes;
-            const details = dData.contactList || dData.ContactList || [];
-            
-            details.forEach((d: any) => {
-              const wid = getContactId(d);
-              if (wid) {
-                contactCache.set(wid, d);
-                const idx = contactList.value.findIndex(item => getContactId(item) === wid);
-                if (idx !== -1) contactList.value[idx] = d;
-              }
-            });
-          } catch (e) { console.error('详情拉取失败', e); }
-        }
-      }
-    }
+    // 3. 同步完成后再次刷新列表
+    const updatedList: any = await contactCache.getAll();
+    contactList.value = updatedList;
   } catch (err) {
     console.error('通讯录加载错误:', err);
     Message.error('通讯录加载失败');
@@ -527,16 +485,17 @@ const getContactAvatar = (c: any) => {
 
 const formatTime = (t: number) => t ? dayjs(t * 1000).format('HH:mm') : '';
 
+const formatText = (text: any) => {
+  if (!text) return '';
+  if (typeof text === 'string') return text;
+  if (typeof text === 'object') return text.str || text.Str || JSON.stringify(text);
+  return String(text);
+};
+
 onMounted(async () => {
   document.body.setAttribute('arco-theme', 'dark');
   if (accountStore.adminToken) {
     await accountStore.syncAccountsFromServer();
-    // 自动加载通讯录详情
-    const accountUuid = accountStore.activeAccountUuid;
-    const currentAcc = accountStore.accounts.find(a => a.uuid === accountUuid);
-    if (currentAcc) {
-      accountStore.syncFullContactList(currentAcc.uuid, currentAcc.sessionKey);
-    }
   }
 });
 </script>

@@ -49,7 +49,10 @@ export const contactCache = {
       };
 
       request.onerror = () => reject(request.error);
-      request.onblocked = () => alert('请关闭其他标签页以更新数据库');
+      request.onblocked = () => {
+        console.warn('[DB] 数据库升级被阻塞，请关闭其他标签页后重试');
+        reject(new Error('数据库升级被阻塞'));
+      };
     });
   },
 

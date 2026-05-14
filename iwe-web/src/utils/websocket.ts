@@ -1,13 +1,12 @@
 import ReconnectingWebSocket from 'reconnecting-websocket';
-import { messageApi } from '@/api/modules/im';
 
 export class IMService {
   private ws: ReconnectingWebSocket | null = null;
   private url: string;
   private onMessageCallback: (msg: any) => void;
-  private isSyncing = false;
-  private pendingQueue: any[] = [];
-  private accountUuid: string;
+  public accountUuid: string;
+  public isConnected = false;
+  private heartbeatTimer: any = null;
 
   constructor(accountUuid: string, url: string, onMessage: (msg: any) => void) {
     this.accountUuid = accountUuid;
@@ -16,58 +15,62 @@ export class IMService {
   }
 
   public connect(key: string) {
-    this.ws = new ReconnectingWebSocket(`${this.url}?key=${key}`);
+    const wsUrl = `${this.url}?key=${key}`;
+    console.log(`[${this.accountUuid}] 正在建立 WebSocket 连接...`);
+    
+    this.ws = new ReconnectingWebSocket(wsUrl);
 
-    this.ws.onopen = async () => {
-      console.log(`[${this.accountUuid}] 连接成功，开启同步锁...`);
-      this.isSyncing = true;
-      this.pendingQueue = [];
+    this.ws.onopen = () => {
+      this.isConnected = true;
+      console.log(`[${this.accountUuid}] WebSocket 连接成功`);
+      this.startHeartbeat();
+    };
 
-      try {
-        // 1. 同步补录 - 尝试多次同步直到没有更多消息
-        console.log(`[${this.accountUuid}] 开始同步历史消息...`);
-        let hasMore = true;
-        let syncCount = 0;
-        while (hasMore && syncCount < 5) { // 最多连续同步5次防止死循环
-          const res: any = await messageApi.syncMsg(key, 0);
-          const msgList = res?.AddMsgList || res?.Data?.AddMsgList || [];
-          if (msgList.length > 0) {
-            console.log(`[${this.accountUuid}] 同步到 ${msgList.length} 条消息`);
-            msgList.forEach((m: any) => this.onMessageCallback(m));
-            syncCount++;
-          } else {
-            hasMore = false;
-          }
-        }
-        console.log(`[${this.accountUuid}] 历史消息同步完成`);
-      } catch (err) {
-        console.error('同步失败', err);
-      } finally {
-        // 2. 释放缓冲区
-        this.isSyncing = false;
-        console.log(`[${this.accountUuid}] 同步锁释放，清空缓冲区: ${this.pendingQueue.length}`);
-        while (this.pendingQueue.length > 0) {
-          const m = this.pendingQueue.shift();
-          this.onMessageCallback(m);
-        }
-      }
+    this.ws.onclose = (event) => {
+      this.isConnected = false;
+      this.stopHeartbeat();
+      // 保留断开原因日志，便于后续排查稳定性问题
+      console.warn(`[${this.accountUuid}] WebSocket 连接断开:`, {
+        code: event.code,
+        reason: event.reason
+      });
+    };
+
+    this.ws.onerror = (event) => {
+      this.isConnected = false;
+      this.stopHeartbeat();
+      console.error(`[${this.accountUuid}] WebSocket 发生错误:`, event);
     };
 
     this.ws.onmessage = (event) => {
       try {
+        // 移除高频消息日志，仅保留解析和回调
         const data = JSON.parse(event.data);
-        if (this.isSyncing) {
-          this.pendingQueue.push(data);
-        } else {
-          this.onMessageCallback(data);
-        }
+        this.onMessageCallback(data);
       } catch (e) {
-        // 忽略非 JSON 消息
+        // 忽略心跳回包或非 JSON 数据
       }
     };
   }
 
   public close() {
+    this.stopHeartbeat();
     this.ws?.close();
+  }
+
+  private startHeartbeat() {
+    this.stopHeartbeat();
+    this.heartbeatTimer = setInterval(() => {
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        this.ws.send('ping');
+      }
+    }, 25000);
+  }
+
+  private stopHeartbeat() {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
   }
 }

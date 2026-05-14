@@ -9,7 +9,7 @@ export const loginApi = {
 
 export const messageApi = {
   syncMsg: (license: string, count = 0) => 
-    request.post(`/message/HttpSyncMsg?key=${license}`, { Count: count }),
+    request.post(`/message/HttpSyncMsg?key=${license}`, { Count: count }, { timeout: 60000 }),
     
   sendText: (license: string, toUser: string, content: string) => 
     request.post(`/message/SendTextMessage?key=${license}`, { 
