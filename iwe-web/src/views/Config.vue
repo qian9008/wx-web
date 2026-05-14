@@ -8,6 +8,9 @@
         <a-form-item field="adminToken" label="管理密钥 (Admin Key)" required>
           <a-input v-model="form.adminToken" placeholder="例如: 707945289775566848" />
         </a-form-item>
+        <a-form-item field="debug" label="调试模式 (Debug)">
+          <a-switch v-model="form.debug" />
+        </a-form-item>
         <a-button type="primary" html-type="submit" :loading="loading" long>
           验证并进入系统
         </a-button>
@@ -30,6 +33,7 @@ const loading = ref(false);
 const form = reactive({
   baseUrl: accountStore.baseUrl || '',
   adminToken: accountStore.adminToken,
+  debug: accountStore.debug.all || false,
 });
 
 const handleSubmit = async () => {
@@ -40,12 +44,16 @@ const handleSubmit = async () => {
     // 立即存入 localStorage，确保 request.ts 的拦截器能拿到最新的配置
     localStorage.setItem('iwe_base_url', form.baseUrl);
     localStorage.setItem('iwe_admin_token', form.adminToken);
+    
+    // 兼容新结构，初次配置只更新 all 开关
+    const newDebugConfig = { ...accountStore.debug, all: form.debug };
+    localStorage.setItem('debug_config', JSON.stringify(newDebugConfig));
 
     // 显式传入 key 进行验证，确保万无一失
     await adminApi.ping(form.adminToken);
     
     // 验证成功后更新 store
-    accountStore.setGlobalConfig(form.baseUrl, form.adminToken);
+    accountStore.setGlobalConfig(form.baseUrl, form.adminToken, newDebugConfig);
     
     Message.success('验证成功，配置已保存');
     router.push('/');

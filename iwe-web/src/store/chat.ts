@@ -2,6 +2,17 @@ import { defineStore } from 'pinia';
 import { useAccountStore } from './account';
 import { contactCache } from '@/utils/contactCache';
 
+const isDebug = (module: 'socket' | 'request' | 'cache') => {
+  const configStr = localStorage.getItem('debug_config');
+  if (!configStr) return false;
+  try {
+    const config = JSON.parse(configStr);
+    return config.all || config[module];
+  } catch (e) {
+    return false;
+  }
+};
+
 export interface AppMessage {
   id: string;
   msgId: number;
@@ -36,28 +47,37 @@ export const useChatStore = defineStore('chat', {
       if (this.msgIdSet.has(String(msg.id))) return;
       this.msgIdSet.add(String(msg.id));
 
-      const myWxid = accountUuid.trim().toLowerCase();
-      const fromId = msg.from.trim().toLowerCase();
-      const toId = msg.to.trim().toLowerCase();
+      const myWxid = accountUuid.trim(); // 移除 toLowerCase 以防止与原始大小写不一致
+      const fromId = msg.from.trim();
+      const toId = msg.to.trim();
       
       // 判定谁是聊天对象
       let partnerId = fromId === myWxid ? toId : fromId;
       
       // 兜底逻辑：处理公众号、系统消息等特殊情况
+      // 如果 partnerId 依然和自己一样，那说明这是一个类似于文件传输助手，或者自己发给自己的消息
       if (!partnerId || partnerId === myWxid) {
-        partnerId = fromId === toId ? fromId : (fromId === myWxid ? toId : fromId);
+        if (fromId !== myWxid && toId === myWxid) {
+          partnerId = fromId;
+        } else if (fromId === myWxid && toId !== myWxid) {
+          partnerId = toId;
+        } else {
+          // 如果真的是自己发给自己，或者实在解析不出来
+          partnerId = fromId || toId;
+        }
       }
 
       // 核心拦截：如果 partnerId 依然为空，或者解析出来的 ID 显然无效，禁止存储
       if (!partnerId || partnerId === 'undefined' || partnerId === 'null') {
-        console.warn(`[ChatStore] 拦截到无效 partnerId 消息，已舍弃:`, msg);
+        if (isDebug('socket')) console.warn(`[ChatStore] 拦截到无效 partnerId 消息，已舍弃:`, msg);
         return;
       }
 
-      console.log(`[Debug:ChatStore] 消息归类判定: myWxid=${myWxid}, from=${fromId}, to=${toId} -> partnerId=${partnerId}`);
+      if (isDebug('socket')) console.log(`[Debug:ChatStore] 消息归类判定: myWxid=${myWxid}, from=${fromId}, to=${toId} -> partnerId=${partnerId}`);
 
-      // 1. 持久化消息到 DB (dev 分支已在 contactCache 中禁用实际写入)
-      await contactCache.saveMessage(accountUuid, msg);
+      // 1. 持久化消息到 DB
+      const msgWithPartner = { ...msg, partnerId };
+      await contactCache.saveMessage(accountUuid, msgWithPartner);
 
       // 2. 更新内存 Store
       if (!this.accountMessages[accountUuid]) {
@@ -119,8 +139,34 @@ export const useChatStore = defineStore('chat', {
     },
 
     async loadHistory(accountUuid: string, partnerId: string) {
-      // 抛弃本地消息化，不再从本地 DB 加载历史，完全依赖 Redis 获取的最近消息
-      return;
+      if (!accountUuid || !partnerId) return;
+      
+      // 1. 从 IndexedDB 加载最近的 50 条本地缓存
+      const localMsgs = await contactCache.getMessages(accountUuid, partnerId, 50);
+      
+      if (localMsgs.length > 0) {
+        console.log(`[ChatStore] 从本地加载了 ${localMsgs.length} 条历史消息`);
+        
+        if (!this.accountMessages[accountUuid]) {
+          this.accountMessages[accountUuid] = {};
+        }
+        
+        const existing = this.accountMessages[accountUuid][partnerId] || [];
+        // 合并去重
+        const merged = [...existing];
+        localMsgs.forEach(m => {
+          if (!merged.find(em => em.id === m.id)) {
+            merged.push(m);
+            this.msgIdSet.add(String(m.id));
+          }
+        });
+        
+        merged.sort((a, b) => a.time - b.time);
+        
+        const messagesForAccount = { ...this.accountMessages[accountUuid] };
+        messagesForAccount[partnerId] = merged;
+        this.accountMessages = { ...this.accountMessages, [accountUuid]: messagesForAccount };
+      }
     },
 
     async loadConversations(accountUuid: string) {

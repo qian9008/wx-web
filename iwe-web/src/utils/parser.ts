@@ -74,6 +74,29 @@ export class MessageParser {
     else if (msgType === 3) {
       msg.type = 'image';
       msg.content = '[图片]';
+      
+      // 尝试解析图片 XML 提取 URL
+      if (content.includes('<img')) {
+        try {
+          const doc = this.parser.parseFromString(content, 'text/xml');
+          const imgNode = doc.querySelector('img');
+          if (imgNode) {
+            // 尝试提取 cdnmidimgurl 或 cdnthumburl
+            const midUrl = imgNode.getAttribute('cdnmidimgurl');
+            const thumbUrl = imgNode.getAttribute('cdnthumburl');
+            const bigUrl = imgNode.getAttribute('cdnbigimgurl');
+            
+            // 微信协议的 cdn url 有时是一个类似 hex 字符串而不是真正的 url
+            // 如果后端接口支持直接拼接，就拼上，暂时保存下来
+            const targetUrl = midUrl || thumbUrl || bigUrl;
+            if (targetUrl) {
+               msg.imageUrl = targetUrl;
+            }
+          }
+        } catch (e) {
+          console.warn('[Parser] 图片 XML 解析失败', e);
+        }
+      }
     }
     else if (msgType === 34) {
       msg.type = 'voice';
@@ -83,7 +106,7 @@ export class MessageParser {
       msg.type = 'video';
       msg.content = '[视频]';
     }
-    else if (msgType === 51 || msgType === 10001) {
+    else if (msgType === 51 || msgType === 10001 || msgType === 9999) {
       msg.type = 'status_notify';
       msg.content = ''; 
     }
@@ -110,9 +133,11 @@ export class MessageParser {
         msg.content = '[解析失败]';
       }
     }
-
+    // TODO: 新增支持小程序卡片、视频号等更多复合类型
+    
+    // 取消对 unsupported 类型的丢弃警告，因为只要有 content，也可以当普通文本展示，避免有些消息悄悄消失
     if (msg.type === 'unsupported') {
-      console.warn(`[Parser] 未知消息结构，原始数据:`, JSON.stringify(rawMsg).slice(0, 300));
+      console.warn(`[Parser] 未知消息结构，保留为 unsupported 并尝试展示, msgType: ${msgType}`, JSON.stringify(rawMsg).slice(0, 300));
     }
 
     return msg;

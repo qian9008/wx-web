@@ -9,6 +9,11 @@ service.interceptors.request.use(
   (config) => {
     const baseUrl = localStorage.getItem('iwe_base_url') || '';
     const adminToken = localStorage.getItem('iwe_admin_token');
+    const debugConfig = JSON.parse(localStorage.getItem('debug_config') || '{"all":false,"request":false}');
+
+    if (debugConfig.all || debugConfig.request) {
+      console.log(`[Request] ${config.method?.toUpperCase()} ${config.url}`, config.params || '', config.data || '');
+    }
 
     if (baseUrl && config.url?.startsWith('/')) {
       config.url = `${baseUrl.replace(/\/$/, '')}${config.url}`;
@@ -31,6 +36,12 @@ service.interceptors.request.use(
 service.interceptors.response.use(
   (response) => {
     const res = response.data;
+    const debugConfig = JSON.parse(localStorage.getItem('debug_config') || '{"all":false,"request":false}');
+
+    if (debugConfig.all || debugConfig.request) {
+      console.log(`[Response] ${response.config.url}`, res);
+    }
+
     // 【防御性逻辑】自动识别并拆除 Code/Data 外壳
     if (res && typeof res === 'object' && 'Code' in res) {
       if (res.Code === 200 || res.Code === 0) {

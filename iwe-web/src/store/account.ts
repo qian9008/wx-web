@@ -12,11 +12,19 @@ interface Account {
   status: 'online' | 'offline';
 }
 
+interface DebugConfig {
+  all: boolean;
+  request: boolean;
+  socket: boolean;
+  cache: boolean;
+}
+
 export const useAccountStore = defineStore('account', {
   state: () => ({
     // 统一键名
     adminToken: localStorage.getItem('adminToken') || '',
     baseUrl: localStorage.getItem('baseUrl') || '',
+    debug: JSON.parse(localStorage.getItem('debug_config') || '{"all":false,"request":false,"socket":false,"cache":false}') as DebugConfig,
     accounts: [] as Account[],
     activeAccountUuid: '',
     // 内存镜像：wxid -> contactDetail
@@ -26,11 +34,18 @@ export const useAccountStore = defineStore('account', {
   }),
 
   actions: {
-    setGlobalConfig(url: string, token: string) {
+    setGlobalConfig(url: string, token: string, debug: any) {
       this.baseUrl = url;
       this.adminToken = token;
+      this.debug = typeof debug === 'boolean' ? { ...this.debug, all: debug } : debug;
       localStorage.setItem('baseUrl', url);
       localStorage.setItem('adminToken', token);
+      localStorage.setItem('debug_config', JSON.stringify(this.debug));
+    },
+
+    updateDebugConfig(config: Partial<DebugConfig>) {
+      this.debug = { ...this.debug, ...config };
+      localStorage.setItem('debug_config', JSON.stringify(this.debug));
     },
 
     // 账号管理

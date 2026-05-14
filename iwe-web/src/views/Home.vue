@@ -141,7 +141,10 @@
               <template v-else>{{ (msg.isSelf ? 'Me' : currentChatPartnerName[0]) }}</template>
             </a-avatar>
             <div class="msg-bubble">
-              <div class="content">{{ msg.content }}</div>
+              <div v-if="msg.type === 'image' && msg.imageUrl" class="content image-content">
+                <img :src="msg.imageUrl" alt="图片" style="max-width: 200px; max-height: 200px; border-radius: 4px;" />
+              </div>
+              <div v-else class="content">{{ msg.content }}</div>
               <div v-if="msg.isRevoked" class="revoked-tag">消息已撤回</div>
             </div>
           </div>
@@ -262,6 +265,35 @@
               </a-popconfirm>
             </div>
           </a-tab-pane>
+          <a-tab-pane key="3" title="调试设置">
+            <a-form layout="vertical" style="margin-top: 15px;">
+              <a-form-item label="总开关 (All)">
+                <a-switch 
+                  :model-value="accountStore.debug.all" 
+                  @update:model-value="(val: any) => accountStore.updateDebugConfig({ all: val })" 
+                />
+              </a-form-item>
+              <a-form-item label="请求日志 (Request)">
+                <a-switch 
+                  :model-value="accountStore.debug.request" 
+                  @update:model-value="(val: any) => accountStore.updateDebugConfig({ request: val })" 
+                />
+              </a-form-item>
+              <a-form-item label="通信日志 (Socket)">
+                <a-switch 
+                  :model-value="accountStore.debug.socket" 
+                  @update:model-value="(val: any) => accountStore.updateDebugConfig({ socket: val })" 
+                />
+              </a-form-item>
+              <a-form-item label="缓存日志 (Cache)">
+                <a-switch 
+                  :model-value="accountStore.debug.cache" 
+                  @update:model-value="(val: any) => accountStore.updateDebugConfig({ cache: val })" 
+                />
+              </a-form-item>
+              <a-alert type="info" show-icon style="margin-top: 10px;">开启后请在浏览器控制台(F12)查看日志</a-alert>
+            </a-form>
+          </a-tab-pane>
         </a-tabs>
       </div>
     </a-modal>
@@ -282,6 +314,17 @@ import {
 import { contactCache } from '@/utils/contactCache';
 import Login from './Login.vue';
 import dayjs from 'dayjs';
+
+const isDebug = (module: 'socket' | 'request' | 'cache') => {
+  const configStr = localStorage.getItem('debug_config');
+  if (!configStr) return false;
+  try {
+    const config = JSON.parse(configStr);
+    return config.all || config[module];
+  } catch (e) {
+    return false;
+  }
+};
 
 const accountStore = useAccountStore();
 const chatStore = useChatStore();
@@ -380,12 +423,14 @@ const currentMessages = computed(() => {
   if (!accountUuid || !partnerId) return [];
   
   const messages = chatStore.accountMessages[accountUuid]?.[partnerId] || [];
-  console.log(`[Debug:Home] 试图查找消息: accountUuid=${accountUuid}, partnerId=${partnerId}`);
-  console.log(`[Debug:Home] accountMessages 中已有的 accountUuid 列表:`, Object.keys(chatStore.accountMessages));
-  if (chatStore.accountMessages[accountUuid]) {
-    console.log(`[Debug:Home] 该账号下已有的 partnerId 列表:`, Object.keys(chatStore.accountMessages[accountUuid]));
+  if (isDebug('socket')) {
+    console.log(`[Debug:Home] 试图查找消息: accountUuid=${accountUuid}, partnerId=${partnerId}`);
+    console.log(`[Debug:Home] accountMessages 中已有的 accountUuid 列表:`, Object.keys(chatStore.accountMessages));
+    if (chatStore.accountMessages[accountUuid]) {
+      console.log(`[Debug:Home] 该账号下已有的 partnerId 列表:`, Object.keys(chatStore.accountMessages[accountUuid]));
+    }
+    console.log(`[Debug:Home] 最终查找到的消息数量:`, messages.length);
   }
-  console.log(`[Debug:Home] 最终查找到的消息数量:`, messages.length);
   
   return messages;
 });

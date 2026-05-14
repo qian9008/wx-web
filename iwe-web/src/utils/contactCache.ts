@@ -95,13 +95,35 @@ export const contactCache = {
 
   // --- 消息相关 ---
   async saveMessage(accountUuid: string, msg: any) {
-    // 抛弃最近消息的本地化，不再保存到 IndexedDB
-    return Promise.resolve(true);
+    const db = await this.init();
+    return new Promise((resolve) => {
+      const transaction = db.transaction(MSG_STORE, 'readwrite');
+      const store = transaction.objectStore(MSG_STORE);
+      store.put({
+        ...msg,
+        accountUuid,
+        partnerId: msg.partnerId // 在 chatStore 中会补全这个字段
+      });
+      transaction.oncomplete = () => resolve(true);
+    });
   },
 
   async getMessages(accountUuid: string, partnerId: string, limit = 50) {
-    // 抛弃最近消息的本地化，不再从 IndexedDB 读取
-    return Promise.resolve([]);
+    const db = await this.init();
+    return new Promise<any[]>((resolve) => {
+      const transaction = db.transaction(MSG_STORE, 'readonly');
+      const store = transaction.objectStore(MSG_STORE);
+      const index = store.index('account_partner');
+      const request = index.getAll(IDBKeyRange.only([accountUuid, partnerId]));
+      
+      request.onsuccess = () => {
+        const all = request.result || [];
+        // 按时间倒序取最近的，再正序返回给前端
+        const sorted = all.sort((a, b) => b.time - a.time).slice(0, limit);
+        resolve(sorted.sort((a, b) => a.time - b.time));
+      };
+      request.onerror = () => resolve([]);
+    });
   },
 
   async get(wxid: string) {
