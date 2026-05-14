@@ -22,7 +22,7 @@ interface DebugConfig {
 export const useAccountStore = defineStore('account', {
   state: () => ({
     // 统一键名
-    adminToken: localStorage.getItem('adminToken') || '',
+    adminKey: localStorage.getItem('ADMIN_KEY') || '',
     baseUrl: localStorage.getItem('baseUrl') || '',
     debug: JSON.parse(localStorage.getItem('debug_config') || '{"all":false,"request":false,"socket":false,"cache":false}') as DebugConfig,
     accounts: [] as Account[],
@@ -34,12 +34,12 @@ export const useAccountStore = defineStore('account', {
   }),
 
   actions: {
-    setGlobalConfig(url: string, token: string, debug: any) {
+    setGlobalConfig(url: string, adminKey: string, debug: any) {
       this.baseUrl = url;
-      this.adminToken = token;
+      this.adminKey = adminKey;
       this.debug = typeof debug === 'boolean' ? { ...this.debug, all: debug } : debug;
       localStorage.setItem('baseUrl', url);
-      localStorage.setItem('adminToken', token);
+      localStorage.setItem('ADMIN_KEY', adminKey);
       localStorage.setItem('debug_config', JSON.stringify(this.debug));
     },
 

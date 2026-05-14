@@ -4,24 +4,31 @@
     <div class="column account-bar">
       <div class="account-list">
         <div 
-          v-for="acc in accountStore.accounts.filter(a => a.status === 'online')" 
-          :key="acc.uuid"
+          v-for="(acc, index) in accountStore.accounts" 
+          :key="acc.uuid || index"
           class="account-item"
-          :class="{ active: accountStore.activeAccountUuid === acc.uuid }"
+          :class="{
+            active: accountStore.activeAccountUuid === acc.uuid,
+            offline: acc.status === 'offline'
+          }"
           @click="accountStore.activeAccountUuid = acc.uuid"
         >
           <a-popover position="right" trigger="click" :content-style="{ padding: '0' }">
             <a-tooltip :content="acc.nickname" position="right">
               <a-avatar :size="48" shape="square" :style="{ backgroundColor: '#333' }">
-                <img v-if="acc.avatar" :src="acc.avatar" />
-                <template v-else>{{ acc.nickname[0] }}</template>
+                <img v-if="acc.avatar" :src="acc.avatar" :style="acc.status === 'offline' ? { filter: 'grayscale(100%)', opacity: '0.6' } : {}" />
+                <template v-else>
+                  <span :style="acc.status === 'offline' ? { color: '#666' } : {}">{{ acc.nickname[0] }}</span>
+                </template>
               </a-avatar>
             </a-tooltip>
             <template #content>
               <div class="account-status-panel">
                 <div class="panel-header">
                   <span class="nickname">{{ acc.nickname }}</span>
-                  <a-tag size="mini" color="green">在线</a-tag>
+                  <a-tag size="mini" :color="acc.status === 'online' ? 'green' : 'gray'">
+                    {{ acc.status === 'online' ? '在线' : '离线' }}
+                  </a-tag>
                 </div>
                 
                 <div class="status-actions">
@@ -223,9 +230,86 @@
                 <a-input v-model="accountStore.baseUrl" placeholder="例如: http://192.168.1.10:8819" />
               </a-form-item>
               <a-form-item label="管理密钥">
-                <a-input v-model="accountStore.adminToken" />
+                <a-input v-model="accountStore.adminKey" />
               </a-form-item>
             </a-form>
+
+            <a-divider>管理功能</a-divider>
+            <div class="admin-actions">
+              <a-space wrap>
+                <a-button type="outline" size="small" @click="handleAdminAction('getList')">
+                  获取授权码列表
+                </a-button>
+                <a-popover position="bottom" trigger="click">
+                  <a-button type="outline" size="small" status="success">
+                    生成授权码
+                  </a-button>
+                  <template #content>
+                    <div style="padding: 10px; width: 200px;">
+                      <a-input-number v-model="adminDays" placeholder="天数" size="small" :min="1" style="margin-bottom: 8px;" />
+                      <a-button type="primary" size="small" long @click="handleAdminAction('gen')">确认生成</a-button>
+                    </div>
+                  </template>
+                </a-popover>
+                <a-popover position="bottom" trigger="click">
+                  <a-button type="outline" size="small" status="warning">
+                    授权码延期
+                  </a-button>
+                  <template #content>
+                    <div style="padding: 10px; width: 220px;">
+                      <a-input v-model="adminAuthKey" placeholder="授权码 (Auth Key)" size="small" style="margin-bottom: 8px;" />
+                      <a-input-number v-model="adminDays" placeholder="延期天数" size="small" :min="1" style="margin-bottom: 8px;" />
+                      <a-button type="primary" size="small" long @click="handleAdminAction('delay')">确认延期</a-button>
+                    </div>
+                  </template>
+                </a-popover>
+                <a-popover position="bottom" trigger="click">
+                  <a-button type="outline" size="small" status="danger">
+                    删除授权码
+                  </a-button>
+                  <template #content>
+                    <div style="padding: 10px; width: 220px;">
+                      <a-input v-model="adminAuthKey" placeholder="授权码 (Auth Key)" size="small" style="margin-bottom: 8px;" />
+                      <a-button type="primary" status="danger" size="small" long @click="handleAdminAction('delete')">确认删除</a-button>
+                    </div>
+                  </template>
+                </a-popover>
+              </a-space>
+            </div>
+
+            <div v-if="adminActionResult" class="admin-result-panel">
+              <div class="result-header">
+                <span>操作反馈</span>
+                <a-link size="mini" @click="adminActionResult = ''; adminActionData = null">清空</a-link>
+              </div>
+              <div v-if="Array.isArray(adminActionData)" class="admin-table-container">
+                <a-table :data="adminActionData" :pagination="false" size="mini" :scroll="{ x: '100%' }">
+                  <template #columns>
+                    <a-table-column title="ID" data-index="id" :width="50" />
+                    <a-table-column title="状态" :width="70">
+                      <template #cell="{ record }">
+                        <a-tag :color="record.status === 1 ? 'green' : 'gray'" size="mini">
+                          {{ record.status === 1 ? '在线' : '离线' }}
+                        </a-tag>
+                      </template>
+                    </a-table-column>
+                    <a-table-column title="授权码 (License)" data-index="license" />
+                    <a-table-column title="昵称" data-index="nick_name" />
+                    <a-table-column title="到期时间" data-index="expiry_date" :width="110" />
+                    <a-table-column title="操作" :width="120">
+                      <template #cell="{ record }">
+                        <a-space>
+                          <a-button type="text" size="mini" @click="adminAuthKey = record.license; Message.info('授权码已填充，请在上方执行操作')">
+                            选择
+                          </a-button>
+                        </a-space>
+                      </template>
+                    </a-table-column>
+                  </template>
+                </a-table>
+              </div>
+              <pre v-else class="result-content">{{ adminActionResult }}</pre>
+            </div>
           </a-tab-pane>
           <a-tab-pane key="2" title="数据管理">
             <div class="data-mgmt">
@@ -342,6 +426,7 @@ import { useAccountStore } from '@/store/account';
 import { useChatStore } from '@/store/chat';
 import { socketManager } from '@/utils/socketManager';
 import { loginApi } from '@/api/modules/im';
+import { adminApi } from '@/api/modules/admin';
 import { Message } from '@arco-design/web-vue';
 import { 
   IconPlus, IconMessage, IconUser, IconSettings, 
@@ -361,6 +446,37 @@ const adminVisible = ref(false);
 const pendingSessionKey = ref('');
 const verifyMobile = ref('');
 const accountResults = ref<Record<string, any>>({});
+
+// 管理功能相关
+const adminAuthKey = ref('');
+const adminDays = ref(30);
+const adminActionResult = ref('');
+const adminActionData = ref<any>(null);
+
+const handleAdminAction = async (type: string) => {
+  try {
+    let res: any;
+    if (type === 'getList') {
+      res = await adminApi.getAuthKey();
+    } else if (type === 'gen') {
+      res = await adminApi.genAuthKey(adminDays.value);
+      Message.success('生成成功');
+    } else if (type === 'delay') {
+      if (!adminAuthKey.value) return Message.warning('请输入授权码');
+      res = await adminApi.delayAuthKey(adminAuthKey.value, adminDays.value);
+      Message.success('延期成功');
+    } else if (type === 'delete') {
+      if (!adminAuthKey.value) return Message.warning('请输入授权码');
+      res = await adminApi.deleteAuthKey(adminAuthKey.value);
+      Message.success('删除成功');
+    }
+    adminActionData.value = res;
+    adminActionResult.value = JSON.stringify(res, null, 2);
+  } catch (err: any) {
+    adminActionData.value = null;
+    adminActionResult.value = `Error: ${err.message || err}`;
+  }
+};
 
 const handleAccountStatusAction = async (acc: any, action: string) => {
   try {
@@ -607,7 +723,7 @@ const handleClearCache = async () => {
 };
 
 const handleSaveConfig = () => {
-  accountStore.setGlobalConfig(accountStore.baseUrl, accountStore.adminToken);
+  accountStore.setGlobalConfig(accountStore.baseUrl, accountStore.adminKey, accountStore.debug);
   window.location.reload();
 };
 
@@ -659,11 +775,45 @@ watch(adminVisible, (v) => v && loadCacheStats());
 onMounted(async () => {
   document.body.setAttribute('arco-theme', 'dark');
   await accountStore.loadContactsFromCache();
-  if (accountStore.adminToken) await accountStore.syncAccountsFromServer();
+  if (accountStore.adminKey) await accountStore.syncAccountsFromServer();
 });
 </script>
 
 <style scoped>
+.admin-panel { padding: 10px 0; }
+.admin-actions { margin-top: 10px; }
+.admin-result-panel {
+  margin-top: 20px;
+  background: #000;
+  border-radius: 4px;
+  padding: 10px;
+  border: 1px solid #2e2e2e;
+}
+.admin-table-container {
+  margin-top: 10px;
+  background: #1a1a1a;
+  border-radius: 4px;
+}
+:deep(.arco-table-container) {
+  border: 1px solid #2e2e2e;
+}
+.result-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  color: #86909c;
+  font-size: 12px;
+}
+.result-content {
+  margin: 0;
+  font-size: 12px;
+  color: #07c160;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 200px;
+  overflow-y: auto;
+}
 .workbench { display: flex; height: 100vh; width: 100vw; overflow: hidden; background: #171717; color: #e5e6eb; }
 .column { height: 100%; display: flex; flex-direction: column; }
 .account-bar { width: 68px; background: #0a0a0a; align-items: center; padding: 20px 0; border-right: 1px solid #2e2e2e; }

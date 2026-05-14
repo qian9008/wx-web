@@ -7,11 +7,15 @@ export const adminApi = {
   // 获取在线账号列表
   getOnlineAccounts: () => request.get('/admin/GetAuthKey'),
   
+  // 获取授权码列表
   getAuthKey: () => request.get('/admin/GetAuthKey'),
   
-  genAuthKey: (days: number) => request.get('/admin/GenAuthKey1', { params: { days } }),
+  // 生成授权码(新设备)
+  genAuthKey: (days: number) => request.post('/admin/GenAuthKey1', { days }),
   
-  delayAuthKey: (authKey: string, days: number) => request.get('/admin/DelayAuthKey', { params: { authKey, days } }),
+  // 授权码延期
+  delayAuthKey: (authKey: string, days: number) => request.post('/admin/DelayAuthKey', { authKey, days }),
   
-  deleteAuthKey: (authKey: string) => request.get('/admin/DeleteAuthKey', { params: { authKey } }),
+  // 删除授权码
+  deleteAuthKey: (authKey: string) => request.post('/admin/DeleteAuthKey', { authKey }),
 };
