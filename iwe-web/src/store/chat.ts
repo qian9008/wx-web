@@ -75,7 +75,7 @@ export const useChatStore = defineStore('chat', {
       messagesForAccount[partnerId] = [...messagesForAccount[partnerId], msg];
       messagesForAccount[partnerId].sort((a, b) => a.time - b.time);
       
-      this.accountMessages[accountUuid] = messagesForAccount;
+      this.accountMessages = { ...this.accountMessages, [accountUuid]: messagesForAccount };
 
       // 3. 更新会话列表镜像 (upsert)
       await this.updateConversation(accountUuid, partnerId, msg);
