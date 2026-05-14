@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia';
+import { useAccountStore } from './account';
 import { contactCache } from '@/utils/contactCache';
 
 export interface AppMessage {
