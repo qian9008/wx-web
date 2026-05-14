@@ -1,6 +1,24 @@
 <template>
   <div class="login-container">
-    <a-tabs default-active-key="qrcode" type="capsule" justify>
+    <a-tabs default-active-key="connect" type="capsule" justify>
+      <a-tab-pane key="connect" title="链接状态">
+        <div class="connect-box">
+          <a-statistic title="当前链接数量" :value="connectCount" :value-from="0" animation>
+            <template #suffix>
+              <icon-thunderbolt />
+            </template>
+          </a-statistic>
+          <div class="connect-actions" style="margin-top: 20px;">
+            <a-button type="primary" @click="fetchConnectStatus" :loading="connectLoading">
+              <template #icon><icon-refresh /></template>
+              刷新状态
+            </a-button>
+          </div>
+          <div v-if="connectResult" class="result-panel" style="margin-top: 20px;">
+            <pre>{{ connectResult }}</pre>
+          </div>
+        </div>
+      </a-tab-pane>
       <a-tab-pane key="qrcode" title="扫码登录">
         <div class="login-box">
           <div v-if="loading" class="loading">
@@ -71,7 +89,8 @@ import { ref, reactive, onMounted, onUnmounted } from 'vue';
 import { loginApi } from '@/api/modules/im';
 import { Message } from '@arco-design/web-vue';
 import {
-  IconRefresh
+  IconRefresh,
+  IconThunderbolt
 } from '@arco-design/web-vue/es/icon';
 
 const props = defineProps({
@@ -107,6 +126,25 @@ const deviceForm = reactive({
   DeviceData: '',
   Key: props.assignedKey
 });
+
+// --- 链接状态相关 ---
+const connectCount = ref(0);
+const connectLoading = ref(false);
+const connectResult = ref('');
+
+const fetchConnectStatus = async () => {
+  connectLoading.value = true;
+  try {
+    const res: any = await loginApi.getIWXConnect();
+    connectCount.value = res?.Count || 0;
+    connectResult.value = JSON.stringify(res, null, 2);
+  } catch (err: any) {
+    Message.error('获取链接状态失败');
+    connectResult.value = `Error: ${err.message || err}`;
+  } finally {
+    connectLoading.value = false;
+  }
+};
 
 const fetchQrCode = async () => {
   loading.value = true;
@@ -194,7 +232,10 @@ const handleDeviceLogin = async () => {
 };
 
 const stopPolling = () => { if (timer) clearInterval(timer); timer = null; };
-onMounted(() => fetchQrCode());
+onMounted(() => {
+  fetchConnectStatus();
+  fetchQrCode();
+});
 onUnmounted(() => stopPolling());
 </script>
 
@@ -207,4 +248,7 @@ onUnmounted(() => stopPolling());
 .status-msg { margin-top: 15px; color: #86909c; }
 
 .a16-login-box { padding: 20px 10px; }
+.connect-box { padding: 30px 20px; text-align: center; }
+.result-panel { background: #1a1a1a; padding: 12px; border-radius: 4px; border: 1px solid #333; text-align: left; max-height: 200px; overflow-y: auto; }
+.result-panel pre { margin: 0; font-size: 12px; color: #07c160; white-space: pre-wrap; word-break: break-all; }
 </style>

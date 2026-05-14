@@ -22,6 +22,9 @@ export const loginApi = {
 
   // 获取验证码 (绑定手机)
   getVerifyCode: (license: string, mobile: string) => request.post(`/login/WxBindOpMobileForReg?key=${license}`, { Mobile: mobile }),
+
+  // 获取链接数量
+  getIWXConnect: () => request.get('/login/GetIWXConnect'),
 };
 
 export const messageApi = {
