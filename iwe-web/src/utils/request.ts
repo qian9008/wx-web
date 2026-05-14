@@ -2,7 +2,7 @@ import axios from 'axios';
 import { Message } from '@arco-design/web-vue';
 
 const service = axios.create({
-  timeout: 10000,
+  timeout: 30000,
 });
 
 service.interceptors.request.use(

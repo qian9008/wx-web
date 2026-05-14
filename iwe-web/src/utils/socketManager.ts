@@ -48,11 +48,9 @@ class GlobalSocketManager {
     service.connect(key);
     this.connections.set(uuid, service);
     
-    // 初始化同步历史消息 (dev 分支：抛弃本地化后，此处仅同步最近的增量消息)
-    await this.syncHistory(uuid, key, uuid);
-    
-    // 同步 Redis 中的最近消息快照 (冷启动优化)
-    await this.syncRedisMsg(uuid, key, uuid);
+    // 初始化同步 (不再阻塞主流程，采用并行静默同步策略)
+    this.syncHistory(uuid, key, uuid);
+    this.syncRedisMsg(uuid, key, uuid);
 
     // 开启低频 HTTP 轮询补位
     this.startPolling(uuid, key, uuid);
