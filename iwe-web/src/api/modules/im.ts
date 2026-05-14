@@ -3,20 +3,25 @@ import request from '@/utils/request';
 export const loginApi = {
   getQrCode: (key?: string) => request.post(`/login/GetLoginQrCodeNewX${key ? `?key=${key}` : ''}`, {}),
   checkLogin: (uuid: string, key?: string) => request.get(`/login/CheckLoginStatus?uuid=${uuid}${key ? `&key=${key}` : ''}`),
-  getOnlineStatus: () => request.get('/login/GetLoginStatus'),
   getOnlineAccounts: () => request.get('/equipment/GetOnlineInfo'),
   
   // A16 数据登录
   a16Login: (data: any) => request.post('/login/A16Login', data),
   
+  // 62 账号密码登录
+  deviceLogin: (license: string, data: any) => request.post(`/login/DeviceLogin?key=${license}`, data),
+
   // 检测是否可以设置微信号
   checkCanSetAlias: (license: string) => request.get(`/login/CheckCanSetAlias?key=${license}`),
   
-  // 获取登录状态
-  getLoginStatus: (license: string) => request.get(`/login/GetLoginStatus?key=${license}`),
-  
+  // 获取在线状态 (Key 模式)
+  getOnlineStatus: (license: string) => request.get(`/login/GetLoginStatus?key=${license}`),
+
   // 唤醒登录
   wakeUpLogin: (license: string) => request.post(`/login/WakeUpLogin?key=${license}`),
+
+  // 获取验证码 (绑定手机)
+  getVerifyCode: (license: string, mobile: string) => request.post(`/login/WxBindOpMobileForReg?key=${license}`, { Mobile: mobile }),
 };
 
 export const messageApi = {

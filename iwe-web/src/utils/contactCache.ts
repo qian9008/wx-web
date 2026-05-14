@@ -113,14 +113,32 @@ export const contactCache = {
     return new Promise<any[]>((resolve) => {
       const transaction = db.transaction(MSG_STORE, 'readonly');
       const store = transaction.objectStore(MSG_STORE);
+      
+      // 复合索引查询在某些环境下不稳定，或者 accountUuid/partnerId 包含特殊字符可能导致数组键失效
+      // 优化方案：使用 IDBKeyRange.only 显式指定复合键
       const index = store.index('account_partner');
       const request = index.getAll(IDBKeyRange.only([accountUuid, partnerId]));
       
       request.onsuccess = () => {
-        const all = request.result || [];
+        let all = request.result || [];
+        
+        // 鲁棒性兜底：如果复合索引未返回结果，尝试手动过滤（虽然性能略低但更可靠）
+        if (all.length === 0) {
+          const fallbackRequest = store.getAll();
+          fallbackRequest.onsuccess = () => {
+            const filtered = (fallbackRequest.result || []).filter(
+              (m: any) => m.accountUuid === accountUuid && m.partnerId === partnerId
+            );
+            const sorted = filtered.sort((a, b) => b.time - a.time).slice(0, limit);
+            resolve(sorted.sort((a, b) => a.time - b.time));
+          };
+          fallbackRequest.onerror = () => resolve([]);
+          return;
+        }
+
         // 按时间倒序取最近的，再正序返回给前端
-        const sorted = all.sort((a, b) => b.time - a.time).slice(0, limit);
-        resolve(sorted.sort((a, b) => a.time - b.time));
+        const sorted = all.sort((a: any, b: any) => b.time - a.time).slice(0, limit);
+        resolve(sorted.sort((a: any, b: any) => a.time - b.time));
       };
       request.onerror = () => resolve([]);
     });

@@ -40,27 +40,26 @@
         </div>
       </a-tab-pane>
 
-      <a-tab-pane key="status" title="状态维护">
-        <div class="status-tools">
-          <a-space direction="vertical" fill>
-            <a-input-group>
-              <a-input v-model="statusKey" placeholder="请输入 License (Key)" />
-              <a-button type="outline" @click="handleGetStatus" :loading="statusLoading">查询状态</a-button>
-            </a-input-group>
-            
-            <div class="tool-btns">
-              <a-button @click="handleWakeUp" type="outline" status="success">
-                <template #icon><icon-thunderbolt /></template>唤醒登录
-              </a-button>
-              <a-button @click="handleCheckAlias" type="outline" status="warning">
-                <template #icon><icon-edit /></template>检测微信号设置
-              </a-button>
-            </div>
-
-            <div v-if="statusResult" class="result-panel">
-              <pre>{{ statusResult }}</pre>
-            </div>
-          </a-space>
+      <a-tab-pane key="device" title="62账号登录">
+        <div class="a16-login-box">
+          <a-form :model="deviceForm" layout="vertical" @submit="handleDeviceLogin">
+            <a-form-item field="Account" label="微信账号" required>
+              <a-input v-model="deviceForm.Account" placeholder="手机号/微信号/QQ" />
+            </a-form-item>
+            <a-form-item field="Password" label="密码" required>
+              <a-input-password v-model="deviceForm.Password" placeholder="请输入密码" />
+            </a-form-item>
+            <a-form-item field="DeviceData" label="62 数据">
+              <a-textarea 
+                v-model="deviceForm.DeviceData" 
+                placeholder="请输入 62 数据 (可选)" 
+                :auto-size="{ minRows: 2, maxRows: 4 }"
+              />
+            </a-form-item>
+            <a-button type="primary" html-type="submit" :loading="deviceLoading" long>
+              立即登录
+            </a-button>
+          </a-form>
         </div>
       </a-tab-pane>
     </a-tabs>
@@ -71,7 +70,9 @@
 import { ref, reactive, onMounted, onUnmounted } from 'vue';
 import { loginApi } from '@/api/modules/im';
 import { Message } from '@arco-design/web-vue';
-import { IconRefresh, IconThunderbolt, IconEdit } from '@arco-design/web-vue/es/icon';
+import {
+  IconRefresh
+} from '@arco-design/web-vue/es/icon';
 
 const props = defineProps({
   assignedKey: {
@@ -98,16 +99,19 @@ const a16Form = reactive({
   Key: props.assignedKey // 使用分配的 Key
 });
 
-// --- 状态工具相关 ---
-const statusKey = ref(props.assignedKey); // 初始化为分配的 Key
-const statusLoading = ref(false);
-const statusResult = ref('');
+// --- 62 账号登录相关 ---
+const deviceLoading = ref(false);
+const deviceForm = reactive({
+  Account: '',
+  Password: '',
+  DeviceData: '',
+  Key: props.assignedKey
+});
 
 const fetchQrCode = async () => {
   loading.value = true;
   expired.value = false;
   try {
-    // 传入分配的 Key，后端会将该二维码与该 Key 绑定
     const res: any = await loginApi.getQrCode(props.assignedKey);
     if (res && res.QrCodeUrl) {
       qrUrl.value = res.QrCodeUrl;
@@ -135,7 +139,7 @@ const startPolling = () => {
           Message.success('登录成功');
           emit('success', {
               uuid: uuid.value, 
-              sessionKey: res.Key || props.assignedKey, // 优先使用 API 返回的，如果没有则使用分配的
+              sessionKey: res.Key || props.assignedKey,
               nickname: res.Nickname || '新账号'
           });
       } else if (res && res.Status === 1) {
@@ -147,11 +151,6 @@ const startPolling = () => {
 
 const handleA16Login = async () => {
   if (!a16Form.A16Data) return Message.warning('请输入 A16 数据');
-  // 如果没有分配 Key 且表单也没有，则提醒（虽然逻辑上应该由 Home 分配）
-  if (!a16Form.Key) {
-     // 如果 API 支持不传 Key 自动分配则可继续，否则应报错
-  }
-
   a16Loading.value = true;
   try {
     const res: any = await loginApi.a16Login(a16Form);
@@ -172,41 +171,25 @@ const handleA16Login = async () => {
   }
 };
 
-const handleGetStatus = async () => {
-  if (!statusKey.ref) {
-      // 自动尝试从 store 获取当前激活账号的 key
-      // 这里简便起见要求用户输入
-  }
-  if (!statusKey.value) return Message.warning('请输入 License Key');
-  statusLoading.value = true;
+const handleDeviceLogin = async () => {
+  if (!deviceForm.Account || !deviceForm.Password) return Message.warning('请输入账号和密码');
+  deviceLoading.value = true;
   try {
-    const res = await loginApi.getLoginStatus(statusKey.value);
-    statusResult.value = JSON.stringify(res, null, 2);
+    const res: any = await loginApi.deviceLogin(deviceForm.Key, deviceForm);
+    if (res && res.Key) {
+      Message.success('62 账号登录成功');
+      emit('success', {
+        uuid: 'device-' + Date.now(),
+        sessionKey: res.Key,
+        nickname: res.Nickname || deviceForm.Account
+      });
+    } else {
+      Message.error(res?.Msg || '登录失败');
+    }
   } catch (err: any) {
-    statusResult.value = `查询失败: ${err.message}`;
+    Message.error(err.message || '网络请求失败');
   } finally {
-    statusLoading.value = false;
-  }
-};
-
-const handleWakeUp = async () => {
-  if (!statusKey.value) return Message.warning('请输入 License Key');
-  try {
-    const res: any = await loginApi.wakeUpLogin(statusKey.value);
-    Message.success('唤醒指令已发送');
-    statusResult.value = JSON.stringify(res, null, 2);
-  } catch (err: any) {
-    Message.error(`唤醒失败: ${err.message}`);
-  }
-};
-
-const handleCheckAlias = async () => {
-  if (!statusKey.value) return Message.warning('请输入 License Key');
-  try {
-    const res: any = await loginApi.checkCanSetAlias(statusKey.value);
-    statusResult.value = JSON.stringify(res, null, 2);
-  } catch (err: any) {
-    Message.error(`检测失败: ${err.message}`);
+    deviceLoading.value = false;
   }
 };
 
@@ -224,8 +207,4 @@ onUnmounted(() => stopPolling());
 .status-msg { margin-top: 15px; color: #86909c; }
 
 .a16-login-box { padding: 20px 10px; }
-.status-tools { padding: 20px 10px; }
-.tool-btns { margin-top: 15px; display: flex; gap: 10px; }
-.result-panel { margin-top: 15px; background: #232323; padding: 10px; border-radius: 4px; border: 1px solid #333; max-height: 200px; overflow: auto; }
-.result-panel pre { margin: 0; font-size: 12px; color: #07c160; white-space: pre-wrap; word-break: break-all; }
 </style>

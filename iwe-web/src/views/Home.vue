@@ -10,12 +10,48 @@
           :class="{ active: accountStore.activeAccountUuid === acc.uuid }"
           @click="accountStore.activeAccountUuid = acc.uuid"
         >
-          <a-tooltip :content="acc.nickname" position="right">
-            <a-avatar :size="48" shape="square" :style="{ backgroundColor: '#333' }">
-              <img v-if="acc.avatar" :src="acc.avatar" />
-              <template v-else>{{ acc.nickname[0] }}</template>
-            </a-avatar>
-          </a-tooltip>
+          <a-popover position="right" trigger="click" :content-style="{ padding: '0' }">
+            <a-tooltip :content="acc.nickname" position="right">
+              <a-avatar :size="48" shape="square" :style="{ backgroundColor: '#333' }">
+                <img v-if="acc.avatar" :src="acc.avatar" />
+                <template v-else>{{ acc.nickname[0] }}</template>
+              </a-avatar>
+            </a-tooltip>
+            <template #content>
+              <div class="account-status-panel">
+                <div class="panel-header">
+                  <span class="nickname">{{ acc.nickname }}</span>
+                  <a-tag size="mini" color="green">在线</a-tag>
+                </div>
+                
+                <div class="status-actions">
+                  <a-button size="mini" type="outline" @click="handleAccountStatusAction(acc, 'status')">
+                    <template #icon><icon-check-circle /></template>在线查询
+                  </a-button>
+                  <a-button size="mini" type="outline" status="success" @click="handleAccountStatusAction(acc, 'wakeup')">
+                    <template #icon><icon-thunderbolt /></template>唤醒登录
+                  </a-button>
+                  <a-popover position="right" trigger="click">
+                    <a-button size="mini" type="outline" status="warning">
+                      <template #icon><icon-safe /></template>验证码
+                    </a-button>
+                    <template #content>
+                      <div style="padding: 10px; width: 220px;">
+                        <a-input-group>
+                          <a-input v-model="verifyMobile" placeholder="手机号" size="small" />
+                          <a-button type="primary" size="small" @click="handleAccountVerifyCode(acc)">发送</a-button>
+                        </a-input-group>
+                      </div>
+                    </template>
+                  </a-popover>
+                </div>
+
+                <div v-if="accountResults[acc.uuid]" class="status-result">
+                  <pre>{{ accountResults[acc.uuid] }}</pre>
+                </div>
+              </div>
+            </template>
+          </a-popover>
         </div>
         
         <div class="add-account-btn" @click="handleAddAccount">
@@ -305,33 +341,52 @@ import { ref, computed, onMounted, watch, nextTick } from 'vue';
 import { useAccountStore } from '@/store/account';
 import { useChatStore } from '@/store/chat';
 import { socketManager } from '@/utils/socketManager';
-import { messageApi } from '@/api/modules/im';
+import { loginApi } from '@/api/modules/im';
 import { Message } from '@arco-design/web-vue';
 import { 
   IconPlus, IconMessage, IconUser, IconSettings, 
-  IconFaceSmileFill, IconFolder, IconImage, IconTool
+  IconFaceSmileFill, IconFolder, IconImage, IconTool,
+  IconThunderbolt, IconCheckCircle, IconSafe
 } from '@arco-design/web-vue/es/icon';
 import { contactCache } from '@/utils/contactCache';
 import Login from './Login.vue';
 import dayjs from 'dayjs';
 
-const isDebug = (module: 'socket' | 'request' | 'cache') => {
-  const configStr = localStorage.getItem('debug_config');
-  if (!configStr) return false;
-  try {
-    const config = JSON.parse(configStr);
-    return config.all || config[module];
-  } catch (e) {
-    return false;
-  }
-};
-
+import { isDebug } from '@/utils/debug';
 const accountStore = useAccountStore();
 const chatStore = useChatStore();
 const inputText = ref('');
 const loginVisible = ref(false);
 const adminVisible = ref(false);
 const pendingSessionKey = ref('');
+const verifyMobile = ref('');
+const accountResults = ref<Record<string, any>>({});
+
+const handleAccountStatusAction = async (acc: any, action: string) => {
+  try {
+    let res: any;
+    if (action === 'status') {
+      res = await loginApi.getOnlineStatus(acc.sessionKey);
+    } else if (action === 'wakeup') {
+      res = await loginApi.wakeUpLogin(acc.sessionKey);
+      Message.success('唤醒指令已发送');
+    }
+    accountResults.value[acc.uuid] = JSON.stringify(res, null, 2);
+  } catch (err: any) {
+    accountResults.value[acc.uuid] = `Error: ${err.message || err}`;
+  }
+};
+
+const handleAccountVerifyCode = async (acc: any) => {
+  if (!verifyMobile.value) return Message.warning('请输入手机号');
+  try {
+    const res = await loginApi.getVerifyCode(acc.sessionKey, verifyMobile.value);
+    accountResults.value[acc.uuid] = JSON.stringify(res, null, 2);
+    Message.success('验证码请求已发送');
+  } catch (err: any) {
+    Message.error(err.message || '发送失败');
+  }
+};
 
 const handleAddAccount = () => {
   // 自动分配一个未使用的槽位 Key
@@ -643,6 +698,12 @@ onMounted(async () => {
 .input-section textarea { flex: 1; border: none; padding: 10px 15px; background: transparent; color: #e5e6eb; outline: none; resize: none; }
 .submit-bar { height: 40px; display: flex; justify-content: flex-end; padding: 0 15px; }
 .empty-holder { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; opacity: 0.3; }
+.account-status-panel { padding: 15px; width: 280px; background: #1a1a1a; }
+.account-status-panel .panel-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.account-status-panel .nickname { font-weight: bold; font-size: 14px; }
+.status-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.status-result { background: #000; padding: 8px; border-radius: 4px; max-height: 200px; overflow-y: auto; }
+.status-result pre { margin: 0; font-size: 11px; color: #07c160; white-space: pre-wrap; word-break: break-all; }
 .data-mgmt { padding: 10px 0; }
 .stat-group { background: #2e2e2e; padding: 15px; border-radius: 8px; margin-bottom: 10px; }
 .stat-item { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 14px; }

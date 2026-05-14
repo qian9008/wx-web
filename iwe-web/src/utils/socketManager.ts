@@ -3,17 +3,7 @@ import { useChatStore } from '@/store/chat';
 import { useAccountStore } from '@/store/account';
 import { messageApi } from '@/api/modules/im';
 import { MessageParser } from '@/utils/parser';
-
-const isDebug = (module: 'socket' | 'request' | 'cache') => {
-  const configStr = localStorage.getItem('debug_config');
-  if (!configStr) return false;
-  try {
-    const config = JSON.parse(configStr);
-    return config.all || config[module];
-  } catch (e) {
-    return false;
-  }
-};
+import { isDebug } from '@/utils/debug';
 
 class GlobalSocketManager {
   private connections: Map<string, IMService> = new Map();
@@ -188,13 +178,18 @@ class GlobalSocketManager {
   private extractMsgList(data: any): any[] {
     if (!data) return [];
     
+    // 如果 data 本身就是数组，直接返回
+    if (Array.isArray(data)) {
+      return data;
+    }
+
     // 微信协议中常见的几个消息容器
     // 根据你的日志反馈，响应中包含 'List'，这可能就是消息列表
-    let list = data.AddMsgs || data.add_msgs || data.List || data.list || data.ModMsgs || data.mod_msgs;
+    let list = data.AddMsgs || data.add_msgs || data.List || data.list || data.ModMsgs || data.mod_msgs || data.AddMsgList;
     
     // 深度搜索逻辑：如果外层没有，尝试找 Data 内部
     if (!list && data.Data && typeof data.Data === 'object') {
-      list = data.Data.AddMsgs || data.Data.List || data.Data.list || data.Data.add_msgs;
+      list = data.Data.AddMsgs || data.Data.List || data.Data.list || data.Data.add_msgs || data.Data.AddMsgList;
     }
 
     if (Array.isArray(list)) {

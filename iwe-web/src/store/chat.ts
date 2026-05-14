@@ -1,17 +1,7 @@
 import { defineStore } from 'pinia';
 import { useAccountStore } from './account';
 import { contactCache } from '@/utils/contactCache';
-
-const isDebug = (module: 'socket' | 'request' | 'cache') => {
-  const configStr = localStorage.getItem('debug_config');
-  if (!configStr) return false;
-  try {
-    const config = JSON.parse(configStr);
-    return config.all || config[module];
-  } catch (e) {
-    return false;
-  }
-};
+import { isDebug } from '@/utils/debug';
 
 export interface AppMessage {
   id: string;
