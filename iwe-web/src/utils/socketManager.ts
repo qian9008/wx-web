@@ -59,12 +59,24 @@ class GlobalSocketManager {
   private async syncRedisMsg(uuid: string, key: string, currentWxid: string) {
     try {
       console.log(`[SocketManager:${uuid}] 正在同步 Redis 极速快照...`);
-      // 注意：此接口在某些版本中可能需要从 messageApi 或其他模块导出
       const res: any = await messageApi.getRedisSyncMsg(key);
-      const msgList = this.extractMsgList(res);
+      
+      // 特殊处理：如果是字符串，尝试解析 JSON (Redis返回的可能是 JSON 字符串)
+      let dataToExtract = res;
+      if (typeof res === 'string') {
+        try {
+          dataToExtract = JSON.parse(res);
+        } catch (e) {
+          // ignore
+        }
+      }
+      
+      const msgList = this.extractMsgList(dataToExtract);
       if (msgList.length > 0) {
         console.log(`[SocketManager:${uuid}] 从 Redis 恢复了 ${msgList.length} 条最近消息`);
         msgList.forEach((m: any) => this.handleMessage(uuid, m, currentWxid));
+      } else {
+        console.log(`[SocketManager:${uuid}] Redis 中没有最近消息记录`);
       }
     } catch (e) {
       console.warn(`[SocketManager:${uuid}] Redis 快照同步跳过或失败:`, e);
