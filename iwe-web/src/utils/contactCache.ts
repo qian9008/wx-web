@@ -95,39 +95,13 @@ export const contactCache = {
 
   // --- 消息相关 ---
   async saveMessage(accountUuid: string, msg: any) {
-    const db = await this.init();
-    // 强制重新计算 partnerId 确保正确
-    const myId = accountUuid.trim().toLowerCase();
-    const fromId = msg.from.trim().toLowerCase();
-    const toId = msg.to.trim().toLowerCase();
-    const partnerId = fromId === myId ? toId : fromId;
-
-    return new Promise((resolve) => {
-      const transaction = db.transaction(MSG_STORE, 'readwrite');
-      const store = transaction.objectStore(MSG_STORE);
-      store.put({ 
-        ...msg, 
-        accountUuid, 
-        partnerId,
-        account_partner: [accountUuid, partnerId] 
-      });
-      transaction.oncomplete = () => resolve(true);
-    });
+    // 抛弃最近消息的本地化，不再保存到 IndexedDB
+    return Promise.resolve(true);
   },
 
   async getMessages(accountUuid: string, partnerId: string, limit = 50) {
-    const db = await this.init();
-    return new Promise<any[]>((resolve) => {
-      const transaction = db.transaction(MSG_STORE, 'readonly');
-      const store = transaction.objectStore(MSG_STORE);
-      const index = store.index('account_partner');
-      const request = index.getAll(IDBKeyRange.only([accountUuid, partnerId]));
-      request.onsuccess = () => {
-        const msgs = (request.result || []).sort((a: any, b: any) => a.time - b.time);
-        resolve(msgs.slice(-limit));
-      };
-      request.onerror = () => resolve([]);
-    });
+    // 抛弃最近消息的本地化，不再从 IndexedDB 读取
+    return Promise.resolve([]);
   },
 
   async get(wxid: string) {

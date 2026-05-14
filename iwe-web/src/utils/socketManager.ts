@@ -45,11 +45,29 @@ class GlobalSocketManager {
     service.connect(key);
     this.connections.set(uuid, service);
     
-    // 初始化同步历史消息
+    // 初始化同步历史消息 (dev 分支：抛弃本地化后，此处仅同步最近的增量消息)
     await this.syncHistory(uuid, key, currentWxid);
     
+    // 同步 Redis 中的最近消息快照 (冷启动优化)
+    await this.syncRedisMsg(uuid, key, currentWxid);
+
     // 开启低频 HTTP 轮询补位
     this.startPolling(uuid, key, currentWxid);
+  }
+
+  private async syncRedisMsg(uuid: string, key: string, currentWxid: string) {
+    try {
+      console.log(`[SocketManager:${uuid}] 正在同步 Redis 极速快照...`);
+      // 注意：此接口在某些版本中可能需要从 messageApi 或其他模块导出
+      const res: any = await messageApi.getRedisSyncMsg(key);
+      const msgList = this.extractMsgList(res);
+      if (msgList.length > 0) {
+        console.log(`[SocketManager:${uuid}] 从 Redis 恢复了 ${msgList.length} 条最近消息`);
+        msgList.forEach((m: any) => this.handleMessage(uuid, m, currentWxid));
+      }
+    } catch (e) {
+      console.warn(`[SocketManager:${uuid}] Redis 快照同步跳过或失败:`, e);
+    }
   }
 
   private startPolling(uuid: string, key: string, currentWxid: string) {

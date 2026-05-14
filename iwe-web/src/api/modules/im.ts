@@ -80,4 +80,8 @@ export const messageApi = {
       ToUserName: toUser,
       TotalLen: 0
     }),
+
+  // 获取 Redis 缓存的最近消息快照
+  getRedisSyncMsg: (license: string) => 
+    request.get(`/other/GetRedisSyncMsg?key=${license}`),
 };

@@ -95,30 +95,14 @@ export const useChatStore = defineStore('chat', {
     },
 
     async loadHistory(accountUuid: string, partnerId: string) {
-      const history: any = await contactCache.getMessages(accountUuid, partnerId);
-      if (history && history.length > 0) {
-        if (!this.accountMessages[accountUuid]) {
-          this.accountMessages = { ...this.accountMessages, [accountUuid]: {} };
-        }
-        const msgs = history.map((m: any) => ({ ...m })); // 浅拷贝一份
-        this.accountMessages[accountUuid] = {
-          ...this.accountMessages[accountUuid],
-          [partnerId]: msgs
-        };
-        // 同步已读消息 ID 防止重复
-        msgs.forEach((m: any) => this.msgIdSet.add(String(m.id)));
-      }
+      // 抛弃本地消息化，不再从本地 DB 加载历史，完全依赖 Redis 获取的最近消息
+      return;
     },
 
     async loadConversations(accountUuid: string) {
       const dbConvs = await contactCache.getConversations(accountUuid);
       this.accountConversations[accountUuid] = dbConvs;
-      
-      // 同时把所有消息 ID 存入 Set
-      dbConvs.forEach(async (c) => {
-        const msgs = await contactCache.getMessages(accountUuid, c.wxid);
-        msgs.forEach(m => this.msgIdSet.add(String(m.id)));
-      });
+      // 不再从本地 DB 加载消息 ID 去重，Redis 消息将通过 Redis 接口自身的逻辑处理
     },
 
     setConversations(accountUuid: string, conversations: Conversation[]) {
