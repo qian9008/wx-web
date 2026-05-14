@@ -52,6 +52,12 @@ export const useChatStore = defineStore('chat', {
         partnerId = fromId === toId ? fromId : (fromId === myWxid ? toId : fromId);
       }
 
+      // 核心拦截：如果 partnerId 依然为空，或者解析出来的 ID 显然无效，禁止存储
+      if (!partnerId || partnerId === 'undefined' || partnerId === 'null') {
+        console.warn(`[ChatStore] 拦截到无效 partnerId 消息，已舍弃:`, msg);
+        return;
+      }
+
       // 1. 持久化消息到 DB (dev 分支已在 contactCache 中禁用实际写入)
       await contactCache.saveMessage(accountUuid, msg);
 

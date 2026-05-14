@@ -378,7 +378,16 @@ const currentMessages = computed(() => {
   const accountUuid = accountStore.activeAccountUuid;
   const partnerId = chatStore.activeId;
   if (!accountUuid || !partnerId) return [];
-  return chatStore.accountMessages[accountUuid]?.[partnerId] || [];
+  
+  const messages = chatStore.accountMessages[accountUuid]?.[partnerId] || [];
+  console.log(`[Debug:Home] 试图查找消息: accountUuid=${accountUuid}, partnerId=${partnerId}`);
+  console.log(`[Debug:Home] accountMessages 中已有的 accountUuid 列表:`, Object.keys(chatStore.accountMessages));
+  if (chatStore.accountMessages[accountUuid]) {
+    console.log(`[Debug:Home] 该账号下已有的 partnerId 列表:`, Object.keys(chatStore.accountMessages[accountUuid]));
+  }
+  console.log(`[Debug:Home] 最终查找到的消息数量:`, messages.length);
+  
+  return messages;
 });
 
 const currentChatPartnerName = computed(() => {

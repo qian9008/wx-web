@@ -113,27 +113,30 @@ class GlobalSocketManager {
     const accountStore = useAccountStore();
     const msgId = msg.NewMsgId || msg.MsgId || msg.msg_id || msg.new_msg_id || msg.UUID;
     
-    // 特殊处理 10001 类型：联系人更新同步
     const rawType = Number(msg.Type || msg.MsgType || msg.msg_type || 0);
-    if (rawType === 10001 && msg.ModContacts) {
-      console.log(`[Socket:${uuid}] 收到联系人更新(10001)，正在同步到内存镜像`);
-      msg.ModContacts.forEach((contact: any) => {
-        const wxid = contact.userName?.str || contact.UserName?.str || contact.wxid || contact.userName;
-        if (wxid) accountStore.updateContact(wxid, contact);
-      });
+    
+    // 1. 拦截并处理联系人同步消息 (Type 10001)
+    if (rawType === 10001) {
+      if (msg.ModContacts) {
+        console.log(`[Socket:${uuid}] 收到联系人同步，更新内存镜像`);
+        msg.ModContacts.forEach((contact: any) => {
+          const wxid = contact.userName?.str || contact.UserName?.str || contact.wxid || contact.userName;
+          if (wxid) accountStore.updateContact(wxid, contact);
+        });
+      }
+      return; // 协议消息，不进入聊天流
     }
 
     if (msgId && chatStore.msgIdSet.has(String(msgId))) return;
     
     const parsedMsg = MessageParser.parse(msg, currentWxid);
     
-    // 过滤掉状态通知类消息，不显示在聊天窗口
-    if (parsedMsg.type === 'status_notify') {
-      console.log(`[Socket:${uuid}] 收到状态通知(51)，已跳过显示`);
+    // 2. 拦截状态通知和其他非显示类消息
+    if (parsedMsg.type === 'status_notify' || !parsedMsg.content && parsedMsg.type === 'unsupported') {
       return;
     }
 
-    console.log(`[Socket:${uuid}] 收到消息 ID: ${msgId}, 类型: ${parsedMsg.type}`);
+    console.log(`[Socket:${uuid}] 转发有效消息到 Store: ${msgId}, 类型: ${parsedMsg.type}`);
     chatStore.addParsedMessage(uuid, parsedMsg);
   }
 
