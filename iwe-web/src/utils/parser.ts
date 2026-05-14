@@ -40,9 +40,10 @@ export class MessageParser {
     const normalizedMyWxid = String(myWxid).trim().toLowerCase();
     const isSelf = normalizedFrom === normalizedMyWxid;
 
-    const msgId = rawMsg.MsgId || rawMsg.msg_id || 0;
-    const newMsgId = rawMsg.NewMsgId || rawMsg.new_msg_id || msgId || Date.now();
-    const createTime = rawMsg.CreateTime || rawMsg.create_time || Math.floor(Date.now() / 1000);
+    // 提取消息 ID
+    const msgId = rawMsg.MsgId || rawMsg.msg_id || rawMsg.Msgid || 0;
+    const newMsgId = rawMsg.NewMsgId || rawMsg.new_msg_id || rawMsg.Newmsgid || msgId || Date.now();
+    const createTime = rawMsg.CreateTime || rawMsg.create_time || rawMsg.Createtime || Math.floor(Date.now() / 1000);
 
     const msg: AppMessage = {
       id: String(newMsgId),
@@ -56,7 +57,7 @@ export class MessageParser {
       isRevoked: false,
     };
 
-    const msgType = rawMsg.MsgType || rawMsg.msg_type;
+    const msgType = Number(rawMsg.MsgType || rawMsg.msg_type || rawMsg.Msgtype || 0);
 
     // --- 特征检测：识别并过滤掉协议层的 XML 状态消息 ---
     // 如果内容包含 <msg><op 或 <voipinvitemsg 等特征，通常是协议控制消息
@@ -82,7 +83,7 @@ export class MessageParser {
       msg.type = 'video';
       msg.content = '[视频]';
     }
-    else if (msgType === 51) {
+    else if (msgType === 51 || msgType === 10001) {
       msg.type = 'status_notify';
       msg.content = ''; 
     }
@@ -108,6 +109,10 @@ export class MessageParser {
       } catch (e) {
         msg.content = '[解析失败]';
       }
+    }
+
+    if (msg.type === 'unsupported') {
+      console.warn(`[Parser] 未知消息结构，原始数据:`, JSON.stringify(rawMsg).slice(0, 300));
     }
 
     return msg;
