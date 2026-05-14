@@ -137,7 +137,9 @@ class GlobalSocketManager {
     }
 
     console.log(`[Socket:${uuid}] 转发有效消息到 Store: ${msgId}, 类型: ${parsedMsg.type}`);
-    chatStore.addParsedMessage(uuid, parsedMsg);
+    chatStore.addParsedMessage(uuid, parsedMsg).catch(err => {
+      console.error(`[Socket:${uuid}] 存储消息时发生异常:`, err);
+    });
   }
 
   private async syncHistory(uuid: string, key: string, currentWxid: string) {

@@ -78,7 +78,11 @@ export const useChatStore = defineStore('chat', {
       this.accountMessages = { ...this.accountMessages, [accountUuid]: messagesForAccount };
 
       // 3. 更新会话列表镜像 (upsert)
-      await this.updateConversation(accountUuid, partnerId, msg);
+      try {
+        await this.updateConversation(accountUuid, partnerId, msg);
+      } catch (err) {
+        console.error(`[ChatStore] updateConversation 异常:`, err);
+      }
     },
 
     async updateConversation(accountUuid: string, wxid: string, msg: any) {
