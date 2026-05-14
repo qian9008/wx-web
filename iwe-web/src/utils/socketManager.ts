@@ -36,23 +36,26 @@ class GlobalSocketManager {
       wsBaseUrl = `ws://${wsBaseUrl}`;
     }
     
+    // 获取真实的微信号，如果还没同步到就先用 uuid 兜底
+    const realWxid = accountStore.accounts.find(a => a.uuid === uuid)?.nickname || uuid;
+
     const service = new IMService(
       uuid,
       `${wsBaseUrl}/ws/GetSyncMsg`,
-      (msg) => this.handleMessage(uuid, msg, currentWxid)
+      (msg) => this.handleMessage(uuid, msg, uuid) // 这里必须传 uuid，作为 Pinia 的第一级索引
     );
 
     service.connect(key);
     this.connections.set(uuid, service);
     
     // 初始化同步历史消息 (dev 分支：抛弃本地化后，此处仅同步最近的增量消息)
-    await this.syncHistory(uuid, key, currentWxid);
+    await this.syncHistory(uuid, key, uuid);
     
     // 同步 Redis 中的最近消息快照 (冷启动优化)
-    await this.syncRedisMsg(uuid, key, currentWxid);
+    await this.syncRedisMsg(uuid, key, uuid);
 
     // 开启低频 HTTP 轮询补位
-    this.startPolling(uuid, key, currentWxid);
+    this.startPolling(uuid, key, uuid);
   }
 
   private async syncRedisMsg(uuid: string, key: string, currentWxid: string) {

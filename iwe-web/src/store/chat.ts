@@ -35,15 +35,23 @@ export const useChatStore = defineStore('chat', {
       if (this.msgIdSet.has(String(msg.id))) return;
       this.msgIdSet.add(String(msg.id));
 
-      const myId = accountUuid.trim().toLowerCase();
+      const accountStore = useAccountStore();
+      const currentAccount = accountStore.accounts.find(a => a.uuid === accountUuid);
+      // 核心修复：使用真实的微信号进行身份判定，而不是 UUID
+      const myWxid = (currentAccount?.nickname || accountUuid).trim().toLowerCase();
+      
       const fromId = msg.from.trim().toLowerCase();
       const toId = msg.to.trim().toLowerCase();
-      let partnerId = fromId === myId ? toId : fromId;
-      if (!partnerId || partnerId === myId) {
-        partnerId = fromId === toId ? fromId : (fromId === myId ? toId : fromId);
+      
+      // 判定谁是聊天对象
+      let partnerId = fromId === myWxid ? toId : fromId;
+      
+      // 兜底逻辑：处理公众号、系统消息等特殊情况
+      if (!partnerId || partnerId === myWxid) {
+        partnerId = fromId === toId ? fromId : (fromId === myWxid ? toId : fromId);
       }
 
-      // 1. 持久化消息到 DB
+      // 1. 持久化消息到 DB (dev 分支已在 contactCache 中禁用实际写入)
       await contactCache.saveMessage(accountUuid, msg);
 
       // 2. 更新内存 Store (消息)

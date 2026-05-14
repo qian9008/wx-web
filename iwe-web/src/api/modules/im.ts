@@ -82,6 +82,6 @@ export const messageApi = {
     }),
 
   // 获取 Redis 缓存的最近消息快照
-  getRedisSyncMsg: (license: string) =\u003e 
+  getRedisSyncMsg: (license: string) => 
     request.post(`/other/GetRedisSyncMsg?key=${license}`, {}),
 };
