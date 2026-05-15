@@ -24,7 +24,19 @@ export const useAccountStore = defineStore('account', {
     // 统一键名
     adminKey: localStorage.getItem('ADMIN_KEY') || '',
     baseUrl: localStorage.getItem('baseUrl') || '',
-    debug: JSON.parse(localStorage.getItem('debug_config') || '{"all":false,"request":false,"socket":false,"cache":false}') as DebugConfig,
+    debug: (() => {
+      try {
+        const config = JSON.parse(localStorage.getItem('debug_config') || '{}');
+        return {
+          all: !!config.all,
+          request: !!config.request,
+          socket: !!config.socket,
+          cache: !!config.cache
+        };
+      } catch (e) {
+        return { all: false, request: false, socket: false, cache: false };
+      }
+    })() as DebugConfig,
     accounts: [] as Account[],
     activeAccountUuid: '',
     // 内存镜像：wxid -> contactDetail

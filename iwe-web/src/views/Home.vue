@@ -225,12 +225,12 @@
       <div class="admin-panel">
         <a-tabs default-active-key="1">
           <a-tab-pane key="1" title="基础配置">
-            <a-form layout="vertical" style="margin-top: 15px;">
+            <a-form :model="baseConfigForm" layout="vertical" style="margin-top: 15px;">
               <a-form-item label="服务器地址">
-                <a-input v-model="accountStore.baseUrl" placeholder="例如: http://192.168.1.10:8819" />
+                <a-input v-model="baseConfigForm.baseUrl" placeholder="例如: http://192.168.1.10:8819" />
               </a-form-item>
               <a-form-item label="管理密钥">
-                <a-input v-model="accountStore.adminKey" />
+                <a-input v-model="baseConfigForm.adminKey" />
               </a-form-item>
             </a-form>
 
@@ -386,7 +386,7 @@
             </div>
           </a-tab-pane>
           <a-tab-pane key="3" title="调试设置">
-            <a-form layout="vertical" style="margin-top: 15px;">
+            <a-form :model="accountStore.debug" layout="vertical" style="margin-top: 15px;">
               <a-form-item label="总开关 (All)">
                 <a-switch 
                   :model-value="accountStore.debug.all" 
@@ -421,7 +421,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch, nextTick } from 'vue';
+import { ref, reactive, computed, onMounted, watch, nextTick } from 'vue';
 import { useAccountStore } from '@/store/account';
 import { useChatStore } from '@/store/chat';
 import { socketManager } from '@/utils/socketManager';
@@ -447,6 +447,12 @@ const pendingSessionKey = ref('');
 const verifyMobile = ref('');
 const accountResults = ref<Record<string, any>>({});
 
+// 表单数据绑定
+const baseConfigForm = reactive({
+  baseUrl: accountStore.baseUrl,
+  adminKey: accountStore.adminKey
+});
+
 // 管理功能相关
 const adminAuthKey = ref('');
 const adminDays = ref(30);
@@ -459,15 +465,22 @@ const handleAdminAction = async (type: string) => {
     if (type === 'getList') {
       res = await adminApi.getAuthKey();
     } else if (type === 'gen') {
-      res = await adminApi.genAuthKey(adminDays.value);
+      res = await adminApi.genAuthKey({ Count: 1, Days: adminDays.value });
       Message.success('生成成功');
     } else if (type === 'delay') {
       if (!adminAuthKey.value) return Message.warning('请输入授权码');
-      res = await adminApi.delayAuthKey(adminAuthKey.value, adminDays.value);
+      res = await adminApi.delayAuthKey({ 
+        Key: adminAuthKey.value, 
+        Days: adminDays.value,
+        ExpiryDate: "" 
+      });
       Message.success('延期成功');
     } else if (type === 'delete') {
       if (!adminAuthKey.value) return Message.warning('请输入授权码');
-      res = await adminApi.deleteAuthKey(adminAuthKey.value);
+      res = await adminApi.deleteAuthKey({ 
+        Key: adminAuthKey.value, 
+        Opt: 0 
+      });
       Message.success('删除成功');
     }
     adminActionData.value = res;
@@ -723,7 +736,7 @@ const handleClearCache = async () => {
 };
 
 const handleSaveConfig = () => {
-  accountStore.setGlobalConfig(accountStore.baseUrl, accountStore.adminKey, accountStore.debug);
+  accountStore.setGlobalConfig(baseConfigForm.baseUrl, baseConfigForm.adminKey, accountStore.debug);
   window.location.reload();
 };
 
@@ -770,7 +783,14 @@ const formatText = (text: any) => {
   return String(text || '');
 };
 
-watch(adminVisible, (v) => v && loadCacheStats());
+watch(adminVisible, (v) => {
+  if (v) {
+    // 弹窗打开时同步最新配置到表单，避免监听器移除后数据不一致
+    baseConfigForm.baseUrl = accountStore.baseUrl;
+    baseConfigForm.adminKey = accountStore.adminKey;
+    loadCacheStats();
+  }
+});
 
 onMounted(async () => {
   document.body.setAttribute('arco-theme', 'dark');

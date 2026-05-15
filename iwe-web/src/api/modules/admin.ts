@@ -11,11 +11,14 @@ export const adminApi = {
   getAuthKey: () => request.get('/admin/GetAuthKey'),
   
   // 生成授权码(新设备)
-  genAuthKey: (days: number) => request.post('/admin/GenAuthKey1', { days }),
+  genAuthKey: (data: { Count: number, Days: number }) => request.post('/admin/GenAuthKey1', data),
   
   // 授权码延期
-  delayAuthKey: (authKey: string, days: number) => request.post('/admin/DelayAuthKey', { authKey, days }),
+  delayAuthKey: (data: { Key: string, Days: number, ExpiryDate?: string }) => request.post('/admin/DelayAuthKey', {
+    ...data,
+    ExpiryDate: data.ExpiryDate || ""
+  }),
   
   // 删除授权码
-  deleteAuthKey: (authKey: string) => request.post('/admin/DeleteAuthKey', { authKey }),
+  deleteAuthKey: (data: { Key: string, Opt: number }) => request.post('/admin/DeleteAuthKey', data),
 };
