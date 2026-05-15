@@ -7,8 +7,9 @@ const service = axios.create({
 
 service.interceptors.request.use(
   (config) => {
-    const baseUrl = localStorage.getItem('iwe_base_url') || '';
+    const baseUrl = localStorage.getItem('baseUrl') || localStorage.getItem('iwe_base_url') || '';
     const adminKey = localStorage.getItem('ADMIN_KEY');
+    const tokenKey = localStorage.getItem('TOKEN_KEY');
     const debugConfig = JSON.parse(localStorage.getItem('debug_config') || '{"all":false,"request":false}');
 
     if (debugConfig.all || debugConfig.request) {
@@ -21,12 +22,15 @@ service.interceptors.request.use(
       config.url = `/api${config.url}`;
     }
 
-    // 只有在 URL 和 params 中都没有 key 时，才注入默认的 adminKey
+    // 只有在 URL 和 params 中都没有 key 时，才注入默认的 key
     const hasKeyInUrl = config.url?.includes('key=');
     const hasKeyInParams = config.params?.key !== undefined;
 
-    if (adminKey && !hasKeyInUrl && !hasKeyInParams) {
-      config.params = { ...config.params, key: adminKey };
+    if (!hasKeyInUrl && !hasKeyInParams) {
+      const key = adminKey || tokenKey;
+      if (key) {
+        config.params = { ...config.params, key };
+      }
     }
     return config;
   },

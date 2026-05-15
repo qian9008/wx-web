@@ -1,7 +1,7 @@
 <template>
   <div class="workbench">
     <!-- 第一栏：账号栏 -->
-    <div class="column account-bar">
+    <div v-if="!accountStore.tokenKey" class="column account-bar">
       <div class="account-list">
         <div 
           v-for="(acc, index) in accountStore.accounts" 
@@ -68,7 +68,7 @@
         </div>
       </div>
 
-      <div class="global-settings-btn" @click="adminVisible = true">
+      <div class="global-settings-btn" @click="handleOpenGlobalSettings">
         <icon-tool :size="20" />
       </div>
     </div>
@@ -89,7 +89,8 @@
       >
         <icon-user :size="24" />
       </div>
-      <div class="nav-item settings-item" @click="adminVisible = true">
+
+      <div class="nav-item settings-item" @click="handleOpenPersonalSettings">
         <icon-settings :size="24" />
       </div>
     </div>
@@ -210,6 +211,15 @@
         </div>
       </template>
 
+      <div v-else-if="accountStore.activeAccountUuid === 'pending_login' && currentConversations.length === 0" class="empty-holder offline-holder">
+        <icon-user :size="80" />
+        <p class="hint">账号待登录</p>
+        <p class="sub-hint">检测到该授权码关联账号尚未在线</p>
+        <a-button type="primary" size="large" style="margin-top: 20px;" @click="handleAddAccount">
+          立即登录微信
+        </a-button>
+      </div>
+
       <div v-else class="empty-holder">
         <icon-message :size="80" />
         <p class="hint">未选择会话</p>
@@ -221,10 +231,10 @@
       <Login :assigned-key="pendingSessionKey" @success="handleLoginSuccess" />
     </a-modal>
 
-    <a-modal v-model:visible="adminVisible" title="系统设置" @ok="handleSaveConfig">
+    <a-modal v-model:visible="adminVisible" :title="adminPanelContext === 'global' ? '全局管理控制台' : '个人偏好设置'" width="800px" :footer="false">
       <div class="admin-panel">
-        <a-tabs default-active-key="1">
-          <a-tab-pane key="1" title="基础配置">
+        <a-tabs v-model:active-key="activeAdminTab" type="line">
+          <a-tab-pane v-if="adminPanelContext === 'global'" key="1" title="系统管理">
             <a-form :model="baseConfigForm" layout="vertical" style="margin-top: 15px;">
               <a-form-item label="服务器地址">
                 <a-input v-model="baseConfigForm.baseUrl" placeholder="例如: http://192.168.1.10:8819" />
@@ -311,7 +321,7 @@
               <pre v-else class="result-content">{{ adminActionResult }}</pre>
             </div>
           </a-tab-pane>
-          <a-tab-pane key="2" title="数据管理">
+          <a-tab-pane v-if="adminPanelContext === 'global'" key="2" title="数据管理">
             <div class="data-mgmt">
               <div class="stat-group">
                 <div class="stat-item">
@@ -352,9 +362,17 @@
                     <span class="name">消息记录 (messages)</span>
                     <span class="count">{{ cacheStats.msgCount }} 条</span>
                   </div>
-                  <a-popconfirm content="确定清空所有消息记录吗？" @ok="handleClearStore('messages')">
-                    <a-button type="outline" size="mini" status="warning">清理</a-button>
-                  </a-popconfirm>
+                  <a-space>
+                    <a-popconfirm content="确定仅清理群消息吗？" @ok="handleClearGroupMessages">
+                      <a-button type="outline" size="mini" status="warning">仅清理群消息</a-button>
+                    </a-popconfirm>
+                    <a-popconfirm content="确定仅清理公众号消息吗？" @ok="handleClearOfficialMessages">
+                      <a-button type="outline" size="mini" status="warning">仅清理公众号</a-button>
+                    </a-popconfirm>
+                    <a-popconfirm content="确定清空所有消息记录吗？" @ok="handleClearStore('messages')">
+                      <a-button type="outline" size="mini" status="danger">全部清理</a-button>
+                    </a-popconfirm>
+                  </a-space>
                 </div>
 
                 <div class="store-item">
@@ -385,7 +403,7 @@
               </a-popconfirm>
             </div>
           </a-tab-pane>
-          <a-tab-pane key="3" title="调试设置">
+          <a-tab-pane v-if="adminPanelContext === 'global'" key="3" title="调试设置">
             <a-form :model="accountStore.debug" layout="vertical" style="margin-top: 15px;">
               <a-form-item label="总开关 (All)">
                 <a-switch 
@@ -412,6 +430,47 @@
                 />
               </a-form-item>
               <a-alert type="info" show-icon style="margin-top: 10px;">开启后请在浏览器控制台(F12)查看日志</a-alert>
+            </a-form>
+          </a-tab-pane>
+
+          <a-tab-pane v-if="adminPanelContext === 'global'" key="personal_global" title="全局个人设置">
+            <a-form :model="accountStore.globalAvatarConfig" layout="vertical" style="margin-top: 15px;">
+              <a-alert type="info" style="margin-bottom: 16px;">此处的设置将作为所有账号的默认值</a-alert>
+              <a-form-item label="默认头像下载">
+                <a-switch 
+                  :model-value="accountStore.globalAvatarConfig.downloadEnabled" 
+                  @update:model-value="(val: any) => accountStore.updateAvatarConfig({ downloadEnabled: val }, true)" 
+                />
+              </a-form-item>
+              <a-form-item label="默认头像缓存">
+                <a-switch 
+                  :model-value="accountStore.globalAvatarConfig.cacheEnabled" 
+                  @update:model-value="(val: any) => accountStore.updateAvatarConfig({ cacheEnabled: val }, true)" 
+                />
+              </a-form-item>
+            </a-form>
+          </a-tab-pane>
+
+          <a-tab-pane v-if="adminPanelContext === 'personal'" key="personal" title="当前账号设置">
+            <div v-if="!accountStore.activeAccountUuid" style="padding: 20px; text-align: center; color: #86909c;">
+              请先在左侧选择一个账号后再进行个人设置
+            </div>
+            <a-form v-else :model="accountStore.getEffectiveAvatarConfig()" layout="vertical" style="margin-top: 15px;">
+              <div style="margin-bottom: 16px; color: #07c160; font-weight: bold;">
+                正在设置账号: {{ accountStore.accounts.find(a => a.uuid === accountStore.activeAccountUuid || a.sessionKey === accountStore.activeAccountUuid)?.nickname || '未知账号' }}
+              </div>
+              <a-form-item label="头像下载" help="关闭后将不自动尝试下载原始头像到本地">
+                <a-switch 
+                  :model-value="accountStore.getEffectiveAvatarConfig().downloadEnabled" 
+                  @update:model-value="(val: any) => accountStore.updateAvatarConfig({ downloadEnabled: val })" 
+                />
+              </a-form-item>
+              <a-form-item label="头像缓存" help="关闭后将仅使用原始网络链接，不从本地数据库读取/保存">
+                <a-switch 
+                  :model-value="accountStore.getEffectiveAvatarConfig().cacheEnabled" 
+                  @update:model-value="(val: any) => accountStore.updateAvatarConfig({ cacheEnabled: val })" 
+                />
+              </a-form-item>
             </a-form>
           </a-tab-pane>
         </a-tabs>
@@ -443,6 +502,21 @@ const chatStore = useChatStore();
 const inputText = ref('');
 const loginVisible = ref(false);
 const adminVisible = ref(false);
+const activeAdminTab = ref('1');
+const adminPanelContext = ref<'global' | 'personal'>('global');
+
+const handleOpenGlobalSettings = () => {
+  adminPanelContext.value = 'global';
+  adminVisible.value = true;
+  activeAdminTab.value = '1';
+};
+
+const handleOpenPersonalSettings = () => {
+  adminPanelContext.value = 'personal';
+  adminVisible.value = true;
+  activeAdminTab.value = 'personal';
+};
+
 const pendingSessionKey = ref('');
 const verifyMobile = ref('');
 const accountResults = ref<Record<string, any>>({});
@@ -590,6 +664,9 @@ const displayContactList = computed(() => {
 
 const currentConversations = computed(() => {
   const accountUuid = accountStore.activeAccountUuid;
+  if (!accountUuid || accountUuid === 'pending_login') return [];
+  
+  // 修正：即使离线也允许显示缓存的会话列表
   const convs = chatStore.accountConversations[accountUuid] || [];
   return convs.map(c => {
     const detail = accountStore.contactMap[c.wxid];
@@ -604,7 +681,7 @@ const currentConversations = computed(() => {
 const currentMessages = computed(() => {
   const accountUuid = accountStore.activeAccountUuid;
   const partnerId = chatStore.activeId;
-  if (!accountUuid || !partnerId) return [];
+  if (!accountUuid || accountUuid === 'pending_login' || !partnerId) return [];
   
   const messages = chatStore.accountMessages[accountUuid]?.[partnerId] || [];
   if (isDebug('socket')) {
@@ -642,12 +719,21 @@ const scrollToBottom = async () => {
 watch(currentMessages, () => scrollToBottom(), { deep: true });
 
 watch(() => accountStore.activeAccountUuid, async (newUuid) => {
-  if (newUuid) {
-    await chatStore.loadConversations(newUuid);
-    const acc = accountStore.accounts.find(a => a.uuid === newUuid);
-    if (acc) socketManager.registerAccount(newUuid, acc.sessionKey, newUuid);
+  if (newUuid && newUuid !== 'pending_login') {
+    // 自动判断过滤 ID：有账号对象则取 UUID，否则用标识符本身
+    const acc = accountStore.accounts.find(a => a.uuid === newUuid || a.sessionKey === newUuid);
+    const filterId = acc?.uuid || newUuid;
+    
+    await Promise.all([
+      accountStore.loadContactsFromCache(filterId),
+      chatStore.loadConversations(filterId)
+    ]);
+    
+    if (acc?.uuid) {
+      socketManager.registerAccount(acc.uuid, acc.sessionKey, acc.uuid);
+    }
   }
-});
+}, { immediate: true });
 
 const handleSelectChat = async (wxid: string) => {
   chatStore.activeId = wxid;
@@ -662,10 +748,16 @@ const handleSelectChat = async (wxid: string) => {
 };
 
 const handleSwitchContact = async () => {
+  console.log('[Home] 切换到联系人页');
   activeTab.value = 'contact';
+  
   const accountUuid = accountStore.activeAccountUuid;
-  const acc = accountStore.accounts.find(a => a.uuid === accountUuid);
-  if (acc) await accountStore.syncFullContactList(accountUuid, acc.sessionKey);
+  const acc = accountStore.accounts.find(a => a.uuid === accountUuid || a.sessionKey === accountUuid);
+  
+  // 如果账号不在线（没有 uuid），只切换 Tab 但不加载联系人数据，依靠 UI 引导登录
+  if (acc && acc.uuid) {
+    await accountStore.syncFullContactList(accountUuid, acc.sessionKey);
+  }
 };
 
 const handleSendMessage = async () => {
@@ -723,7 +815,21 @@ const handleClearAvatarCache = async () => {
   await loadCacheStats();
 };
 
-const handleClearStore = async (name: string) => {
+const handleClearGroupMessages = async () => {
+   if (!accountStore.activeAccountUuid) return;
+   await chatStore.clearGroupMessages(accountStore.activeAccountUuid);
+   Message.success('群消息已清空');
+   await loadCacheStats();
+  };
+
+  const handleClearOfficialMessages = async () => {
+    if (!accountStore.activeAccountUuid) return;
+    await chatStore.clearOfficialMessages(accountStore.activeAccountUuid);
+    Message.success('公众号消息已清空');
+    await loadCacheStats();
+  };
+ 
+  const handleClearStore = async (name: string) => {
   await contactCache.clearStore(name);
   Message.success(`已清空 ${name} 表`);
   await loadCacheStats();
@@ -794,8 +900,10 @@ watch(adminVisible, (v) => {
 
 onMounted(async () => {
   document.body.setAttribute('arco-theme', 'dark');
-  await accountStore.loadContactsFromCache();
-  if (accountStore.adminKey) await accountStore.syncAccountsFromServer();
+  // 只要有管理密钥或授权码，就同步账号
+  if (accountStore.adminKey || accountStore.tokenKey) {
+    await accountStore.syncAccountsFromServer();
+  }
 });
 </script>
 
@@ -836,16 +944,63 @@ onMounted(async () => {
 }
 .workbench { display: flex; height: 100vh; width: 100vw; overflow: hidden; background: #171717; color: #e5e6eb; }
 .column { height: 100%; display: flex; flex-direction: column; }
-.account-bar { width: 68px; background: #0a0a0a; align-items: center; padding: 20px 0; border-right: 1px solid #2e2e2e; }
-.account-list { flex: 1; display: flex; flex-direction: column; align-items: center; width: 100%; }
+.account-bar { 
+  width: 68px; 
+  background: #0a0a0a; 
+  align-items: center; 
+  padding: 20px 0; 
+  border-right: 1px solid #2e2e2e; 
+  display: flex; 
+  flex-direction: column; 
+  height: 100vh; 
+  flex-shrink: 0;
+}
+.account-list { 
+  flex: 1; 
+  display: flex; 
+  flex-direction: column; 
+  align-items: center; 
+  width: 100%; 
+  overflow-y: auto; 
+}
 .account-item { margin-bottom: 18px; cursor: pointer; transition: all 0.3s; padding: 0 4px; }
 .account-item.active { border-left: 4px solid #07c160; }
 .add-account-btn { cursor: pointer; color: #86909c; margin-bottom: 20px; }
 .icon-plus-wrapper { background: #2e2e2e; padding: 8px; border-radius: 4px; }
-.nav-bar { width: 60px; background: #1e1e1e; align-items: center; padding: 25px 0; border-right: 1px solid #2e2e2e; }
-.nav-item { color: #919191; margin-bottom: 30px; cursor: pointer; }
+.global-settings-btn { 
+  margin-top: auto; 
+  cursor: pointer; 
+  color: #919191; 
+  transition: color 0.2s; 
+  padding: 20px 0;
+  display: flex;
+  justify-content: center;
+  width: 100%;
+}
+.global-settings-btn:hover { color: #07c160; }
+
+.nav-bar { 
+  width: 60px; 
+  background: #1e1e1e; 
+  align-items: center; 
+  padding: 20px 0; 
+  border-right: 1px solid #2e2e2e; 
+  display: flex; 
+  flex-direction: column; 
+  height: 100vh;
+  flex-shrink: 0;
+}
+.nav-item { color: #919191; margin-bottom: 30px; cursor: pointer; transition: color 0.2s; }
+.nav-item:hover { color: #07c160; }
 .nav-item.active { color: #07c160; }
-.settings-item { margin-top: auto; }
+.settings-item { 
+  margin-top: auto; 
+  cursor: pointer;
+  padding: 20px 0;
+  display: flex;
+  justify-content: center;
+  width: 100%;
+}
 .chat-list { width: 280px; background: #232323; border-right: 1px solid #2e2e2e; }
 .list-search { padding: 15px; }
 .scroll-area { flex: 1; overflow-y: auto; }

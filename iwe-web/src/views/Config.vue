@@ -5,8 +5,11 @@
         <a-form-item field="baseUrl" label="服务器地址" required>
           <a-input v-model="form.baseUrl" placeholder="http://192.168.50.188:8819" />
         </a-form-item>
-        <a-form-item field="adminKey" label="管理密钥 (ADMIN_KEY)" required>
+        <a-form-item field="adminKey" label="管理密钥 (ADMIN_KEY)">
           <a-input v-model="form.adminKey" placeholder="请输入管理功能密钥" />
+        </a-form-item>
+        <a-form-item field="tokenKey" label="授权码 (TOKEN_KEY / License)">
+          <a-input v-model="form.tokenKey" placeholder="请输入授权码 (输入后进入个人 IM 页)" />
         </a-form-item>
         <a-form-item field="debug" label="调试模式 (Debug)">
           <a-switch v-model="form.debug" />
@@ -33,30 +36,47 @@ const loading = ref(false);
 const form = reactive({
   baseUrl: accountStore.baseUrl || '',
   adminKey: accountStore.adminKey,
+  tokenKey: accountStore.tokenKey,
   debug: accountStore.debug.all || false,
 });
 
 const handleSubmit = async () => {
-  if (!form.baseUrl || !form.adminKey) return Message.warning('请填写完整');
+  if (!form.baseUrl) return Message.warning('请填写服务器地址');
+  if (!form.adminKey && !form.tokenKey) return Message.warning('请填写管理密钥或授权码');
   
   loading.value = true;
   try {
     // 立即存入 localStorage，确保 request.ts 的拦截器能拿到最新的配置
+    localStorage.setItem('baseUrl', form.baseUrl);
     localStorage.setItem('iwe_base_url', form.baseUrl);
-    localStorage.setItem('iwe_admin_token', form.adminKey);
-    localStorage.setItem('ADMIN_KEY', form.adminKey);
+    
+    if (form.adminKey) {
+      localStorage.setItem('ADMIN_KEY', form.adminKey);
+      localStorage.setItem('iwe_admin_token', form.adminKey);
+    } else {
+      localStorage.removeItem('ADMIN_KEY');
+      localStorage.removeItem('iwe_admin_token');
+    }
+
+    if (form.tokenKey) {
+      localStorage.setItem('TOKEN_KEY', form.tokenKey);
+    } else {
+      localStorage.removeItem('TOKEN_KEY');
+    }
     
     // 兼容新结构，初次配置只更新 all 开关
     const newDebugConfig = { ...accountStore.debug, all: form.debug };
     localStorage.setItem('debug_config', JSON.stringify(newDebugConfig));
 
-    // 显式传入 key 进行验证，确保万无一失
-    await adminApi.ping(form.adminKey);
+    // 如果填写了 adminKey，则进行验证
+    if (form.adminKey) {
+      await adminApi.ping(form.adminKey);
+    }
     
     // 验证成功后更新 store
-    accountStore.setGlobalConfig(form.baseUrl, form.adminKey, form.adminKey, newDebugConfig);
+    accountStore.setGlobalConfig(form.baseUrl, form.adminKey || '', form.tokenKey || '', newDebugConfig);
     
-    Message.success('验证成功，配置已保存');
+    Message.success('配置已保存');
     router.push('/');
   } catch (err) {
     console.error('验证失败:', err);

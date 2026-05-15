@@ -182,18 +182,30 @@ export const contactCache = {
     });
   },
 
-  async getAll() {
+  async getAll(accountUuid?: string) {
     const db = await this.init();
     return new Promise<any[]>((resolve) => {
       const transaction = db.transaction(STORE_NAME, 'readonly');
       const store = transaction.objectStore(STORE_NAME);
       const request = store.getAll();
-      request.onsuccess = () => resolve((request.result || []).map((r: any) => r.detail));
+      request.onsuccess = () => {
+        const results = request.result || [];
+        // 严格隔离逻辑：
+        // 1. 如果没有提供 accountUuid，通常是全局导出等操作，返回所有。
+        // 2. 如果提供了 accountUuid，则【只】返回匹配该 ID 的联系人。
+        //    不再返回 !r.accountUuid 的数据，防止空槽位泄露其他账号的数据。
+        if (!accountUuid) {
+          resolve(results.map((r: any) => r.detail));
+        } else {
+          const filtered = results.filter((r: any) => r.accountUuid === accountUuid);
+          resolve(filtered.map((r: any) => r.detail));
+        }
+      };
       request.onerror = () => resolve([]);
     });
   },
 
-  async set(wxid: string, detail: any) {
+  async set(wxid: string, detail: any, accountUuid?: string) {
     if (!wxid || typeof wxid !== 'string') {
       console.warn('[DB] 尝试保存无效的 wxid:', wxid);
       return false;
@@ -202,7 +214,14 @@ export const contactCache = {
     return new Promise((resolve) => {
       const transaction = db.transaction(STORE_NAME, 'readwrite');
       const store = transaction.objectStore(STORE_NAME);
-      store.put({ wxid, detail, timestamp: Date.now() });
+      // 使用组合键或增加字段来隔离
+      store.put({ 
+        wxid: accountUuid ? `${accountUuid}_${wxid}` : wxid, 
+        realWxid: wxid, 
+        accountUuid: accountUuid || '', 
+        detail, 
+        timestamp: Date.now() 
+      });
       transaction.oncomplete = () => resolve(true);
       transaction.onerror = (e) => {
         console.error('[DB] 保存联系人失败:', e);
@@ -295,6 +314,62 @@ export const contactCache = {
       transaction.onerror = (e) => {
         console.error(`[DB] 清理表 ${storeName} 失败:`, e);
         resolve(false);
+      };
+    });
+  },
+
+  async clearGroupMessages() {
+    const db = await this.init();
+    return new Promise((resolve) => {
+      const transaction = db.transaction(MSG_STORE, 'readwrite');
+      const store = transaction.objectStore(MSG_STORE);
+      const request = store.openCursor();
+      let count = 0;
+      request.onsuccess = (e: any) => {
+        const cursor = e.target.result;
+        if (cursor) {
+          const msg = cursor.value;
+          if (msg.partnerId && msg.partnerId.endsWith('@chatroom')) {
+            cursor.delete();
+            count++;
+          }
+          cursor.continue();
+        } else {
+          console.log(`[DB] 清理了 ${count} 条群消息记录`);
+          resolve(count);
+        }
+      };
+      request.onerror = (e) => {
+        console.error('[DB] 清理群消息失败:', e);
+        resolve(0);
+      };
+    });
+  },
+
+  async clearOfficialMessages() {
+    const db = await this.init();
+    return new Promise((resolve) => {
+      const transaction = db.transaction(MSG_STORE, 'readwrite');
+      const store = transaction.objectStore(MSG_STORE);
+      const request = store.openCursor();
+      let count = 0;
+      request.onsuccess = (e: any) => {
+        const cursor = e.target.result;
+        if (cursor) {
+          const msg = cursor.value;
+          if (msg.partnerId && (msg.partnerId.startsWith('gh_') || ['fmessage', 'medianote', 'floatbottle'].includes(msg.partnerId))) {
+            cursor.delete();
+            count++;
+          }
+          cursor.continue();
+        } else {
+          console.log(`[DB] 清理了 ${count} 条公众号消息记录`);
+          resolve(count);
+        }
+      };
+      request.onerror = (e) => {
+        console.error('[DB] 清理公众号消息失败:', e);
+        resolve(0);
       };
     });
   },

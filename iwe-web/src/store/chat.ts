@@ -160,9 +160,70 @@ export const useChatStore = defineStore('chat', {
     },
 
     async loadConversations(accountUuid: string) {
+      if (!accountUuid) return;
+      
       const dbConvs = await contactCache.getConversations(accountUuid);
       this.accountConversations[accountUuid] = dbConvs;
+      console.log(`[ChatStore] 已为账号 ${accountUuid} 加载 ${dbConvs.length} 个历史会话`);
+      
       // 不再从本地 DB 加载消息 ID 去重，Redis 消息将通过 Redis 接口自身的逻辑处理
+    },
+
+    async clearGroupMessages(accountUuid: string) {
+      // 1. 清理本地 DB
+      await contactCache.clearGroupMessages();
+
+      // 2. 清理内存消息记录
+      if (this.accountMessages[accountUuid]) {
+        const messagesForAccount = { ...this.accountMessages[accountUuid] };
+        Object.keys(messagesForAccount).forEach(partnerId => {
+          if (partnerId.endsWith('@chatroom')) {
+            delete messagesForAccount[partnerId];
+          }
+        });
+        this.accountMessages = { ...this.accountMessages, [accountUuid]: messagesForAccount };
+      }
+
+      // 3. 更新会话列表中的预览（可选，通常群消息被清理后，会话列表仍保留但最后一条消息可能需要更新，
+      // 这里为了简单直接保留会话，或者如果用户需要彻底清理也可以清理会话预览）
+      if (this.accountConversations[accountUuid]) {
+        const list = [...this.accountConversations[accountUuid]];
+        list.forEach(conv => {
+          if (conv.wxid.endsWith('@chatroom')) {
+            conv.lastMsg = '[消息已清理]';
+            conv.unread = 0;
+          }
+        });
+        this.accountConversations[accountUuid] = list;
+      }
+    },
+
+    async clearOfficialMessages(accountUuid: string) {
+      // 1. 清理本地 DB
+      await contactCache.clearOfficialMessages();
+
+      // 2. 清理内存消息记录
+      if (this.accountMessages[accountUuid]) {
+        const messagesForAccount = { ...this.accountMessages[accountUuid] };
+        Object.keys(messagesForAccount).forEach(partnerId => {
+          if (partnerId.startsWith('gh_') || ['fmessage', 'medianote', 'floatbottle'].includes(partnerId)) {
+            delete messagesForAccount[partnerId];
+          }
+        });
+        this.accountMessages = { ...this.accountMessages, [accountUuid]: messagesForAccount };
+      }
+
+      // 3. 更新会话列表预览
+      if (this.accountConversations[accountUuid]) {
+        const list = [...this.accountConversations[accountUuid]];
+        list.forEach(conv => {
+          if (conv.wxid.startsWith('gh_') || ['fmessage', 'medianote', 'floatbottle'].includes(conv.wxid)) {
+            conv.lastMsg = '[消息已清理]';
+            conv.unread = 0;
+          }
+        });
+        this.accountConversations[accountUuid] = list;
+      }
     },
 
     setConversations(accountUuid: string, conversations: Conversation[]) {
