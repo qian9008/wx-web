@@ -53,6 +53,7 @@ export class IMService {
     };
 
     this.ws.onmessage = (event) => {
+      if (event.data === 'pong') return; // 忽略心跳回包
       try {
         // 移除高频消息日志，仅保留解析和回调
         const data = JSON.parse(event.data);

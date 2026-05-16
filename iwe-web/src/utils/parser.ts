@@ -36,8 +36,8 @@ export class MessageParser {
     }
 
     // 规范化比较 ID
-    const normalizedFrom = String(from).trim().toLowerCase();
-    const normalizedMyWxid = String(myWxid).trim().toLowerCase();
+    const normalizedFrom = String(from).trim(); // 移除 toLowerCase
+    const normalizedMyWxid = String(myWxid).trim(); // 移除 toLowerCase
     const isSelf = normalizedFrom === normalizedMyWxid;
 
     // 提取消息 ID

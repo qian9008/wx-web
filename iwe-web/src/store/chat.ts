@@ -25,230 +25,271 @@ export interface Conversation {
   unread: number;
 }
 
+// Fix #1: 有界去重集合，避免 msgIdSet 无限增长（内存泄漏）
+const MAX_DEDUP_SIZE = 2000;
+
+class BoundedSet {
+  private set = new Set<string>();
+  private queue: string[] = []; // 保序队列，用于淘汰最旧 ID
+
+  has(id: string): boolean {
+    return this.set.has(id);
+  }
+
+  add(id: string): void {
+    if (this.set.has(id)) return;
+    this.set.add(id);
+    this.queue.push(id);
+    if (this.queue.length > MAX_DEDUP_SIZE) {
+      const oldest = this.queue.shift()!;
+      this.set.delete(oldest);
+    }
+  }
+
+  get size(): number {
+    return this.set.size;
+  }
+}
+
+// Fix #2: 二分插入，O(log n) 代替全量 sort O(n log n)
+function binaryInsert(arr: AppMessage[], msg: AppMessage): AppMessage[] {
+  if (arr.length === 0) return [msg];
+  // 如果已有序且新消息最新（常见场景），直接 push，O(1)
+  if (msg.time >= arr[arr.length - 1].time) {
+    return [...arr, msg];
+  }
+  let lo = 0, hi = arr.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (arr[mid].time <= msg.time) lo = mid + 1;
+    else hi = mid;
+  }
+  const result = [...arr];
+  result.splice(lo, 0, msg);
+  return result;
+}
+
 export const useChatStore = defineStore('chat', {
   state: () => ({
     accountMessages: {} as Record<string, Record<string, AppMessage[]>>,
     accountConversations: {} as Record<string, Conversation[]>,
     activeId: '',
-    msgIdSet: new Set<string>(),
+    // Fix #1: 使用有界集合替代无限增长的 Set
+    _msgIdDedup: new BoundedSet() as BoundedSet,
+    // 保留 msgIdSet 引用以兼容外部访问（指向同一个 BoundedSet）
+    get msgIdSet(): BoundedSet { return (this as any)._msgIdDedup; },
   }),
   actions: {
-    async addParsedMessage(accountUuid: string, msg: AppMessage) {
-      if (this.msgIdSet.has(String(msg.id))) return;
-      this.msgIdSet.add(String(msg.id));
+    async addParsedMessage(userName: string, msg: AppMessage) {
+      if (this._msgIdDedup.has(String(msg.id))) {
+        if (isDebug('socket')) console.log(`[ChatStore] 消息 ID ${msg.id} 已在去重集合中`);
+        return;
+      }
+      this._msgIdDedup.add(String(msg.id));
 
-      const myWxid = accountUuid.trim(); // 移除 toLowerCase 以防止与原始大小写不一致
+      const myWxid = userName.trim();
       const fromId = msg.from.trim();
       const toId = msg.to.trim();
-      
-      // 判定谁是聊天对象
-      let partnerId = fromId === myWxid ? toId : fromId;
-      
-      // 兜底逻辑：处理公众号、系统消息等特殊情况
-      // 如果 partnerId 依然和自己一样，那说明这是一个类似于文件传输助手，或者自己发给自己的消息
-      if (!partnerId || partnerId === myWxid) {
-        if (fromId !== myWxid && toId === myWxid) {
-          partnerId = fromId;
-        } else if (fromId === myWxid && toId !== myWxid) {
-          partnerId = toId;
-        } else {
-          // 如果真的是自己发给自己，或者实在解析不出来
-          partnerId = fromId || toId;
-        }
+
+      // Fix #10: 简化 partnerId 判定逻辑
+      let partnerId: string;
+      if (fromId === myWxid) {
+        partnerId = toId || fromId;
+      } else {
+        partnerId = fromId || toId;
       }
 
-      // 核心拦截：如果 partnerId 依然为空，或者解析出来的 ID 显然无效，禁止存储
       if (!partnerId || partnerId === 'undefined' || partnerId === 'null') {
         if (isDebug('socket')) console.warn(`[ChatStore] 拦截到无效 partnerId 消息，已舍弃:`, msg);
         return;
       }
 
-      if (isDebug('socket')) console.log(`[Debug:ChatStore] 消息归类判定: myWxid=${myWxid}, from=${fromId}, to=${toId} -> partnerId=${partnerId}`);
+      if (isDebug('socket')) console.log(`[ChatStore] 消息归类判定: myWxid=${myWxid}, partnerId=${partnerId}`);
 
       // 1. 持久化消息到 DB
       const msgWithPartner = { ...msg, partnerId };
-      await contactCache.saveMessage(accountUuid, msgWithPartner);
+      await contactCache.saveMessage(userName, msgWithPartner);
 
-      // 2. 更新内存 Store
-      if (!this.accountMessages[accountUuid]) {
-        this.accountMessages[accountUuid] = {};
+      // 2. 更新内存 Store（Fix #2: 二分插入 + Fix #8: 删除冗余的内存层 find 去重）
+      if (!this.accountMessages[userName]) {
+        this.accountMessages[userName] = {};
       }
-      
-      // Pinia 对于深层嵌套的响应式对象，直接修改内层可能无法触发视图更新
-      // 必须浅拷贝外层触发 reactivity
-      const messagesForAccount = { ...this.accountMessages[accountUuid] };
-      
-      if (!messagesForAccount[partnerId]) {
-        messagesForAccount[partnerId] = [];
-      }
-      
-      messagesForAccount[partnerId] = [...messagesForAccount[partnerId], msg];
-      messagesForAccount[partnerId].sort((a, b) => a.time - b.time);
-      
-      this.accountMessages = { ...this.accountMessages, [accountUuid]: messagesForAccount };
+
+      const messagesForAccount = { ...this.accountMessages[userName] };
+      const current = messagesForAccount[partnerId] || [];
+
+      // 使用二分插入保持有序，避免全量 sort
+      messagesForAccount[partnerId] = binaryInsert(current, msg);
+
+      // 强制触发响应式更新
+      this.accountMessages[userName] = messagesForAccount;
+      if (isDebug('socket')) console.log(`[ChatStore] 内存更新完成，当前 ${partnerId} 会话消息数: ${messagesForAccount[partnerId].length}`);
 
       // 3. 更新会话列表镜像 (upsert)
       try {
-        await this.updateConversation(accountUuid, partnerId, msg);
+        await this.updateConversation(userName, partnerId, msg);
+        if (isDebug('socket')) console.log(`[ChatStore] 会话列表已更新: ${partnerId}`);
       } catch (err) {
         console.error(`[ChatStore] updateConversation 异常:`, err);
       }
     },
 
-    async updateConversation(accountUuid: string, wxid: string, msg: any) {
-      if (!this.accountConversations[accountUuid]) {
-        this.accountConversations = { ...this.accountConversations, [accountUuid]: [] };
+    async updateConversation(userName: string, wxid: string, msg: any) {
+      if (!this.accountConversations[userName]) {
+        this.accountConversations = { ...this.accountConversations, [userName]: [] };
       }
-      const list = [...this.accountConversations[accountUuid]];
-      let conv = list.find(c => c.wxid === wxid);
-      
-      if (!conv) {
-        conv = { 
-          wxid, 
-          nickname: wxid, 
-          avatar: '', 
-          lastMsg: msg.content, 
-          time: msg.time, 
-          unread: msg.isSelf ? 0 : 1 
+
+      // Fix #5: 置顶而非全量 sort
+      const list = [...this.accountConversations[userName]];
+      const existingIdx = list.findIndex(c => c.wxid === wxid);
+
+      let conv: Conversation;
+      if (existingIdx === -1) {
+        conv = {
+          wxid,
+          nickname: wxid,
+          avatar: '',
+          lastMsg: msg.content,
+          time: msg.time,
+          unread: msg.isSelf ? 0 : 1
         };
-        list.push(conv);
+        list.unshift(conv); // 新会话直接置顶
       } else {
+        conv = { ...list[existingIdx] };
         conv.lastMsg = msg.content;
         conv.time = msg.time;
         if (!msg.isSelf && wxid !== this.activeId) {
           conv.unread = (conv.unread || 0) + 1;
         }
+        // 从原位置移除，插入头部（置顶）
+        list.splice(existingIdx, 1);
+        list.unshift(conv);
       }
 
-      // 排序并置顶
-      list.sort((a, b) => b.time - a.time);
-      this.accountConversations[accountUuid] = list;
+      this.accountConversations[userName] = list;
 
       // 持久化会话到 DB (强制克隆为纯对象，避免 DataCloneError)
-      await contactCache.saveConversation(accountUuid, JSON.parse(JSON.stringify(conv)));
+      await contactCache.saveConversation(userName, JSON.parse(JSON.stringify(conv)));
     },
 
-    async loadHistory(accountUuid: string, partnerId: string) {
-      if (!accountUuid || !partnerId) return;
-      
-      // 1. 从 IndexedDB 加载最近的 50 条本地缓存
-      const localMsgs = await contactCache.getMessages(accountUuid, partnerId, 50);
-      
+    async loadHistory(userName: string, partnerId: string) {
+      if (!userName || !partnerId) return;
+
+      // 从 IndexedDB 加载最近的 50 条本地缓存
+      const localMsgs = await contactCache.getMessages(userName, partnerId, 50);
+
       if (localMsgs.length > 0) {
         console.log(`[ChatStore] 从本地加载了 ${localMsgs.length} 条历史消息`);
-        
-        if (!this.accountMessages[accountUuid]) {
-          this.accountMessages[accountUuid] = {};
+
+        if (!this.accountMessages[userName]) {
+          this.accountMessages[userName] = {};
         }
-        
-        const existing = this.accountMessages[accountUuid][partnerId] || [];
-        // 合并去重
+
+        const existing = this.accountMessages[userName][partnerId] || [];
+        // 合并去重（加入 BoundedSet）
         const merged = [...existing];
         localMsgs.forEach(m => {
-          if (!merged.find(em => em.id === m.id)) {
+          if (!this._msgIdDedup.has(String(m.id))) {
             merged.push(m);
-            this.msgIdSet.add(String(m.id));
+            this._msgIdDedup.add(String(m.id));
           }
         });
-        
+
         merged.sort((a, b) => a.time - b.time);
-        
-        const messagesForAccount = { ...this.accountMessages[accountUuid] };
+
+        const messagesForAccount = { ...this.accountMessages[userName] };
         messagesForAccount[partnerId] = merged;
-        this.accountMessages = { ...this.accountMessages, [accountUuid]: messagesForAccount };
+        this.accountMessages = { ...this.accountMessages, [userName]: messagesForAccount };
       }
     },
 
-    async loadConversations(accountUuid: string) {
-      if (!accountUuid) return;
-      
-      const dbConvs = await contactCache.getConversations(accountUuid);
-      this.accountConversations[accountUuid] = dbConvs;
-      console.log(`[ChatStore] 已为账号 ${accountUuid} 加载 ${dbConvs.length} 个历史会话`);
-      
-      // 不再从本地 DB 加载消息 ID 去重，Redis 消息将通过 Redis 接口自身的逻辑处理
+    async loadConversations(userName: string) {
+      if (!userName) return;
+
+      const dbConvs = await contactCache.getConversations(userName);
+      this.accountConversations[userName] = dbConvs;
+      console.log(`[ChatStore] 已为账号 ${userName} 加载 ${dbConvs.length} 个历史会话`);
     },
 
-    async clearGroupMessages(accountUuid: string) {
+    async clearGroupMessages(userName: string) {
       // 1. 清理本地 DB
-      await contactCache.clearGroupMessages();
+      await contactCache.clearGroupMessages(userName);
 
       // 2. 清理内存消息记录
-      if (this.accountMessages[accountUuid]) {
-        const messagesForAccount = { ...this.accountMessages[accountUuid] };
+      if (this.accountMessages[userName]) {
+        const messagesForAccount = { ...this.accountMessages[userName] };
         Object.keys(messagesForAccount).forEach(partnerId => {
           if (partnerId.endsWith('@chatroom')) {
             delete messagesForAccount[partnerId];
           }
         });
-        this.accountMessages = { ...this.accountMessages, [accountUuid]: messagesForAccount };
+        this.accountMessages = { ...this.accountMessages, [userName]: messagesForAccount };
       }
 
-      // 3. 更新会话列表中的预览（可选，通常群消息被清理后，会话列表仍保留但最后一条消息可能需要更新，
-      // 这里为了简单直接保留会话，或者如果用户需要彻底清理也可以清理会话预览）
-      if (this.accountConversations[accountUuid]) {
-        const list = [...this.accountConversations[accountUuid]];
+      // 3. 更新会话列表预览
+      if (this.accountConversations[userName]) {
+        const list = [...this.accountConversations[userName]];
         list.forEach(conv => {
           if (conv.wxid.endsWith('@chatroom')) {
             conv.lastMsg = '[消息已清理]';
             conv.unread = 0;
           }
         });
-        this.accountConversations[accountUuid] = list;
+        this.accountConversations[userName] = list;
       }
     },
 
-    async clearOfficialMessages(accountUuid: string) {
+    async clearOfficialMessages(userName: string) {
       // 1. 清理本地 DB
-      await contactCache.clearOfficialMessages();
+      await contactCache.clearOfficialMessages(userName);
 
       // 2. 清理内存消息记录
-      if (this.accountMessages[accountUuid]) {
-        const messagesForAccount = { ...this.accountMessages[accountUuid] };
+      if (this.accountMessages[userName]) {
+        const messagesForAccount = { ...this.accountMessages[userName] };
         Object.keys(messagesForAccount).forEach(partnerId => {
           if (partnerId.startsWith('gh_') || ['fmessage', 'medianote', 'floatbottle'].includes(partnerId)) {
             delete messagesForAccount[partnerId];
           }
         });
-        this.accountMessages = { ...this.accountMessages, [accountUuid]: messagesForAccount };
+        this.accountMessages = { ...this.accountMessages, [userName]: messagesForAccount };
       }
 
       // 3. 更新会话列表预览
-      if (this.accountConversations[accountUuid]) {
-        const list = [...this.accountConversations[accountUuid]];
+      if (this.accountConversations[userName]) {
+        const list = [...this.accountConversations[userName]];
         list.forEach(conv => {
           if (conv.wxid.startsWith('gh_') || ['fmessage', 'medianote', 'floatbottle'].includes(conv.wxid)) {
             conv.lastMsg = '[消息已清理]';
             conv.unread = 0;
           }
         });
-        this.accountConversations[accountUuid] = list;
+        this.accountConversations[userName] = list;
       }
     },
 
-    setConversations(accountUuid: string, conversations: Conversation[]) {
-      this.accountConversations[accountUuid] = conversations;
+    setConversations(userName: string, conversations: Conversation[]) {
+      this.accountConversations[userName] = conversations;
     },
 
     // 数据迁移：将旧 ID 下的内存数据迁移到新 ID
     migrateData(oldUuid: string, newUuid: string) {
       if (oldUuid === newUuid) return;
-      
+
       // 迁移消息
       if (this.accountMessages[oldUuid]) {
-        this.accountMessages[newUuid] = { 
-          ...this.accountMessages[newUuid], 
-          ...this.accountMessages[oldUuid] 
+        this.accountMessages[newUuid] = {
+          ...this.accountMessages[newUuid],
+          ...this.accountMessages[oldUuid]
         };
         delete this.accountMessages[oldUuid];
       }
-      
+
       // 迁移会话
       if (this.accountConversations[oldUuid]) {
         this.accountConversations[newUuid] = this.accountConversations[oldUuid];
         delete this.accountConversations[oldUuid];
       }
-      
+
       console.log(`[ChatStore] 数据已从 ${oldUuid} 迁移至 ${newUuid}`);
     }
   }

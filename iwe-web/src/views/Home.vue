@@ -493,7 +493,7 @@ import { ref, reactive, computed, onMounted, watch, nextTick } from 'vue';
 import { useAccountStore } from '@/store/account';
 import { useChatStore } from '@/store/chat';
 import { socketManager } from '@/utils/socketManager';
-import { loginApi } from '@/api/modules/im';
+import { loginApi, messageApi } from '@/api/modules/im';
 import { adminApi } from '@/api/modules/admin';
 import { Message } from '@arco-design/web-vue';
 import { 
@@ -748,17 +748,18 @@ watch(currentMessages, () => scrollToBottom(), { deep: true });
 
 watch(() => accountStore.activeAccountUuid, async (newUuid) => {
   if (newUuid && newUuid !== 'pending_login') {
-    // 自动判断过滤 ID：有账号对象则取 UUID，否则用标识符本身
-    const acc = accountStore.accounts.find(a => a.uuid === newUuid || a.sessionKey === newUuid);
-    const filterId = acc?.uuid || newUuid;
+    // 统一使用 userName 作为唯一标识（uuid === userName === 真实微信 ID）
+    const userName = newUuid;
     
     await Promise.all([
-      accountStore.loadContactsFromCache(filterId),
-      chatStore.loadConversations(filterId)
+      accountStore.loadContactsFromCache(userName),
+      chatStore.loadConversations(userName)
     ]);
     
-    if (acc?.uuid) {
-      socketManager.registerAccount(acc.uuid, acc.sessionKey, acc.uuid);
+    // 获取对应的 license
+    const acc = accountStore.accounts.find(a => a.uuid === userName);
+    if (acc?.sessionKey) {
+      socketManager.registerAccount(userName, acc.sessionKey);
     }
   }
 }, { immediate: true });
@@ -784,19 +785,19 @@ const handleSwitchContact = async () => {
 
 const handleSendMessage = async () => {
   if (!inputText.value.trim()) return;
-  const accountUuid = accountStore.activeAccountUuid;
+  const userName = accountStore.activeAccountUuid;
   const partnerId = chatStore.activeId;
-  const acc = accountStore.accounts.find(a => a.uuid === accountUuid);
+  const acc = accountStore.accounts.find(a => a.uuid === userName);
   if (!acc || !partnerId) return;
 
   try {
     const text = inputText.value;
     inputText.value = '';
     await messageApi.sendText(acc.sessionKey, partnerId, text);
-    chatStore.addParsedMessage(accountUuid, {
+    chatStore.addParsedMessage(userName, {
       id: String(Date.now()),
       msgId: Date.now(),
-      from: accountUuid,
+      from: userName,
       to: partnerId,
       time: Math.floor(Date.now() / 1000),
       type: 'text',
@@ -864,7 +865,7 @@ const handleClearCache = async () => {
 };
 
 const handleSaveConfig = () => {
-  accountStore.setGlobalConfig(baseConfigForm.baseUrl, baseConfigForm.adminKey, accountStore.debug);
+  accountStore.setGlobalConfig(baseConfigForm.baseUrl, baseConfigForm.adminKey, accountStore.tokenKey, accountStore.debug);
   window.location.reload();
 };
 

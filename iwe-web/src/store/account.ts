@@ -131,65 +131,80 @@ export const useAccountStore = defineStore('account', {
           const res: any = await adminApi.getOnlineAccounts();
           console.log('[AccountStore] 使用 ADMIN_KEY 获取到账号列表');
           data = res.Data || res;
-        } else if (this.tokenKey) {
-          console.log('[AccountStore] 使用 TOKEN_KEY 模式');
-          try {
-            const statusRes: any = await loginApi.getOnlineStatus(this.tokenKey);
-            const sData = statusRes.Data || statusRes;
-            const isOnline = statusRes.Code === 200 || sData.loginState === 1 || 
-                             (statusRes.Text && statusRes.Text.includes('在线状态良好'));
-            const resolvedUuid = sData.wxid || sData.wx_id || this.tokenKey;
 
-            data = [{
-              wx_id: resolvedUuid,
-              license: this.tokenKey,
-              nick_name: sData.nick_name || sData.nickname || '授权账号',
-              avatar: sData.avatar || '',
-              status: isOnline ? 'online' : 'offline'
+          // adminKey 模式：先用 API 返回的 ID 建账号，再通过 getProfile 修正为真实 wxid
+          this.accounts = (Array.isArray(data) ? data : []).map((acc: any) => {
+            const userName = acc.userName || acc.UserName || acc.wx_id || acc.uuid || acc.wxid;
+            const key = acc.license || acc.key || acc.session_key || acc.sessionKey || '';
+            return {
+              uuid: userName || key || '',
+              sessionKey: key,
+              nickname: acc.nick_name || acc.nickname || (userName ? '已登录' : '未登录槽位'),
+              avatar: acc.avatar || '',
+              status: (acc.status || (userName ? 'online' : 'offline')) as 'online' | 'offline'
+            };
+          });
+
+          if (this.accounts.length > 0 && !this.activeAccountUuid) {
+            const firstOnline = this.accounts.find(a => a.uuid);
+            if (firstOnline) this.activeAccountUuid = firstOnline.uuid;
+          }
+
+          // 异步修正 ID：getProfile → 拿到真实 wxid → 再注册 Socket
+          this.accounts.forEach(acc => {
+            if (acc.sessionKey) this.fetchProfileAndFixUuid(acc.sessionKey);
+          });
+
+        } else if (this.tokenKey) {
+          // TOKEN_KEY 模式：直接调 getProfile 作为唯一真相，不依赖 getOnlineStatus 解析 wxid
+          console.log('[AccountStore] 使用 TOKEN_KEY 模式，调用 GetProfile 解析真实 wxid...');
+          try {
+            const profileRes: any = await loginApi.getProfile(this.tokenKey);
+            // 拦截器已剥离 Code/Data 外壳，profileRes 就是 Data 体
+            const profileData = profileRes?.Data || profileRes;
+            const userInfo = profileData?.userInfo || profileData?.UserInfo || profileData;
+            
+            const realWxid = userInfo?.userName?.str || userInfo?.UserName?.str 
+                           || userInfo?.userName || userInfo?.UserName;
+            const realNick = userInfo?.nickName?.str || userInfo?.NickName?.str 
+                           || userInfo?.nickName || userInfo?.NickName;
+            const realAvatar = userInfo?.smallHeadImgUrl || userInfo?.SmallHeadImgUrl 
+                             || userInfo?.bigHeadImgUrl || userInfo?.BigHeadImgUrl;
+
+            const resolvedUuid = realWxid || this.tokenKey;
+            console.log(`[AccountStore] TOKEN_KEY 模式 GetProfile 解析: uuid=${resolvedUuid}`);
+
+            this.accounts = [{
+              uuid: resolvedUuid,
+              sessionKey: this.tokenKey,
+              nickname: realNick || '授权账号',
+              avatar: realAvatar || '',
+              status: realWxid ? 'online' : 'offline'
             }];
           } catch (e) {
-            data = [{
-              wx_id: this.tokenKey,
-              license: this.tokenKey,
-              nick_name: '授权账号',
+            console.warn('[AccountStore] TOKEN_KEY GetProfile 失败，使用 tokenKey 占位:', e);
+            this.accounts = [{
+              uuid: this.tokenKey,
+              sessionKey: this.tokenKey,
+              nickname: '授权账号',
+              avatar: '',
               status: 'offline'
             }];
           }
-        }
 
-        this.accounts = (Array.isArray(data) ? data : []).map((acc: any) => {
-          const uuid = acc.wx_id || acc.uuid || acc.wxid || acc.UserName;
-          // 修正 Key 选取：优先取账号自身的 license，授权码模式下取 tokenKey，绝对不回退到管理码
-          const key = acc.license || acc.key || acc.session_key || acc.sessionKey || (this.tokenKey ? this.tokenKey : '');
-
-          return {
-            uuid: uuid || '', 
-            sessionKey: key, 
-            nickname: acc.nick_name || acc.nickname || (uuid ? '已登录' : '未登录槽位'),
-            avatar: acc.avatar || '',
-            status: (acc.status || (uuid ? 'online' : 'offline')) as 'online' | 'offline'
-          };
-        });
-        
-        if (this.tokenKey) {
-          const targetAcc = this.accounts.find(acc => acc.sessionKey === this.tokenKey || acc.uuid === this.tokenKey);
-          this.activeAccountUuid = targetAcc?.uuid || targetAcc?.sessionKey || this.tokenKey;
-        } else if (this.accounts.length > 0 && !this.activeAccountUuid) {
-          const firstOnline = this.accounts.find(a => a.uuid);
-          if (firstOnline) {
-            this.activeAccountUuid = firstOnline.uuid;
+          // 设置活跃账号（此时 uuid 已是真实 wxid 或 tokenKey）
+          const targetAcc = this.accounts[0];
+          if (targetAcc) {
+            this.activeAccountUuid = targetAcc.uuid;
+            // 直接注册 Socket，因为 uuid 已是最终确定的 ID
+            if (targetAcc.sessionKey) {
+              socketManager.registerAccount(targetAcc.uuid, targetAcc.sessionKey);
+              // 加载缓存数据
+              this.loadContactsFromCache(targetAcc.uuid);
+              this.syncFullContactList(targetAcc.uuid, targetAcc.sessionKey);
+            }
           }
         }
-
-        this.accounts.forEach(acc => {
-          if (acc.uuid) {
-            socketManager.registerAccount(acc.uuid, acc.sessionKey, acc.uuid);
-            
-            // 修正：所有账号在获取列表后，都应该尝试补全一次资料以统一 ID
-            // 特别是 adminKey 模式下的账号，也需要通过 GetProfile 修正为真实 wxid
-            this.fetchProfileAndFixUuid(acc.sessionKey);
-          }
-        });
       } catch (err) {
         console.error('获取账号列表失败:', err);
       }
@@ -222,7 +237,9 @@ export const useAccountStore = defineStore('account', {
           if (accIndex > -1) {
             const oldUuid = this.accounts[accIndex].uuid;
             if (oldUuid === realWxid) {
-              console.log(`[AccountStore] 账号 ID 已是最新，无需修正 (${realWxid})`);
+              console.log(`[AccountStore] 账号 ID 已是最新，确保 Socket 注册正确 (${realWxid})`);
+              // ID 已正确，但 Socket 可能尚未注册（首次启动时跳过了预注册）
+              socketManager.registerAccount(realWxid, license);
               return;
             }
 
@@ -256,7 +273,8 @@ export const useAccountStore = defineStore('account', {
             if (oldUuid) {
               socketManager.stopAccount(oldUuid);
             }
-            socketManager.registerAccount(realWxid, license, realWxid);
+            // 这里 registerAccount 内部会自己处理 wxid 查找，但我们已经知道 realWxid 了
+            socketManager.registerAccount(realWxid, license);
             
             // 6. 重新加载新 ID 的缓存
             await this.loadContactsFromCache(realWxid);
@@ -312,7 +330,20 @@ export const useAccountStore = defineStore('account', {
       
       this.syncLockMap[uuid] = true;
       try {
-        console.log(`[AccountStore] 开始全量同步 (账号: ${uuid}, 强制: ${force})`);
+        console.log(`[AccountStore] 开始全量同步检查 (账号: ${uuid}, 强制: ${force})`);
+
+        // 核心优化：先检查本地数据库是否有联系人
+        const currentDbCount = await contactCache.getCount('contacts', uuid);
+        
+        // 如果不是强制同步，且本地已经有联系人，则不再自动调用 API 刷新
+        if (!force && currentDbCount > 0) {
+          console.log(`[AccountStore] 账号 ${uuid} 本地已有联系人 (${currentDbCount}个), 跳过自动 API 同步`);
+          await this.loadContactsFromCache(uuid);
+          this.syncLockMap[uuid] = false;
+          return;
+        }
+
+        console.log(`[AccountStore] 本地无联系人或强制同步，开始调用接口获取 (账号: ${uuid})`);
 
         // 第一阶段：GetFriendList (获取好友总数并同步第一批)
         let apiTotalCount = 0;
@@ -333,16 +364,6 @@ export const useAccountStore = defineStore('account', {
           }
         } catch (e) {
           console.warn('[AccountStore] GetFriendList 失败:', e);
-        }
-
-        // 智能判定：如果不是强制同步，看本地数据是否足够
-        const currentDbCount = await contactCache.getCount('contacts', uuid);
-        
-        // 核心优化：如果 API 返回的总数与本地数据库数量匹配（或本地更多），且不是强制同步，则跳过耗时的分页
-        if (!force && apiTotalCount > 0 && currentDbCount >= apiTotalCount) {
-          console.log(`[AccountStore] 账号 ${uuid} 数量已达标 (db:${currentDbCount}, api:${apiTotalCount}), 跳过分页同步`);
-          await this.loadContactsFromCache(uuid);
-          return;
         }
 
         // 第二阶段：分页补漏

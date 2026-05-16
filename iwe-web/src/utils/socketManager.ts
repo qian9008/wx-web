@@ -9,12 +9,16 @@ class GlobalSocketManager {
   private connections: Map<string, IMService> = new Map();
   private pollingTimers: Map<string, any> = new Map();
 
-  public async registerAccount(uuid: string, key: string, currentWxid: string) {
-    if (!uuid) return;
+  public async registerAccount(userName: string, key: string) {
+    if (!userName) return;
     
-    const existing = this.connections.get(uuid);
+    const accountStore = useAccountStore();
+    // 统一使用 userName 作为 Key
+    const realWxid = userName; 
+
+    const existing = this.connections.get(realWxid);
     if (existing && existing.isConnected) {
-      if (isDebug('socket')) console.log(`[SocketManager] 账号 ${uuid} 已存在活跃连接`);
+      if (isDebug('socket')) console.log(`[SocketManager] 账号 ${realWxid} 已存在活跃连接，跳过`);
       return;
     }
 
@@ -27,8 +31,6 @@ class GlobalSocketManager {
       existing.close();
     }
 
-    const accountStore = useAccountStore();
-    
     // 鲁棒的 URL 转换
     let wsBaseUrl = accountStore.baseUrl;
     if (wsBaseUrl.startsWith('http')) {
@@ -37,27 +39,24 @@ class GlobalSocketManager {
       wsBaseUrl = `ws://${wsBaseUrl}`;
     }
     
-    // 获取真实的微信号，如果还没同步到就先用 uuid 兜底
-    const realWxid = accountStore.accounts.find(a => a.uuid === uuid)?.nickname || uuid;
-
+    // 初始化同步 (不再阻塞主流程，采用并行静默同步策略)
     const service = new IMService(
-      uuid,
+      realWxid, // 使用真实 userName 作为 IMService 内部标识
       `${wsBaseUrl}/ws/GetSyncMsg`,
-      (msg) => this.handleMessage(uuid, msg, uuid) // 这里必须传 uuid，作为 Pinia 的第一级索引
+      (msg) => this.handleMessage(realWxid, msg) // 统一使用 userName(realWxid)
     );
 
     service.connect(key);
-    this.connections.set(uuid, service);
+    this.connections.set(realWxid, service); // 外部 Map key 也统一为 realWxid
     
-    // 初始化同步 (不再阻塞主流程，采用并行静默同步策略)
-    this.syncHistory(uuid, key, uuid);
-    // this.syncRedisMsg(uuid, key, uuid); // 暂时注释掉 Redis 同步以排除干扰
+    // 初始化历史同步
+    this.syncHistory(realWxid, key);
 
     // 开启低频 HTTP 轮询补位
-    this.startPolling(uuid, key, uuid);
+    this.startPolling(realWxid, key);
   }
 
-  private async syncRedisMsg(uuid: string, key: string, currentWxid: string) {
+  private async syncRedisMsg(uuid: string, key: string) {
     /*
     try {
       if (isDebug('socket')) console.log(`[SocketManager:${uuid}] 正在同步 Redis 极速快照...`);
@@ -69,7 +68,7 @@ class GlobalSocketManager {
     */
   }
 
-  private startPolling(uuid: string, key: string, currentWxid: string) {
+  private startPolling(uuid: string, key: string) {
     if (this.pollingTimers.has(uuid)) return;
 
     const poll = async () => {
@@ -82,7 +81,7 @@ class GlobalSocketManager {
           const msgList = this.extractMsgList(res);
           if (msgList.length > 0) {
             if (isDebug('socket')) console.log(`[Polling:${uuid}] 拉取到 ${msgList.length} 条新消息`);
-            msgList.forEach((m: any) => this.handleMessage(uuid, m, currentWxid));
+            msgList.forEach((m: any) => this.handleMessage(uuid, m));
           }
         }
       } catch (e) {
@@ -94,21 +93,23 @@ class GlobalSocketManager {
     poll();
   }
 
-  public stopAccount(uuid: string) {
-    if (this.pollingTimers.has(uuid)) {
-      clearTimeout(this.pollingTimers.get(uuid));
-      this.pollingTimers.delete(uuid);
+  public stopAccount(wxid: string) {
+    if (this.pollingTimers.has(wxid)) {
+      clearTimeout(this.pollingTimers.get(wxid));
+      this.pollingTimers.delete(wxid);
     }
-    const conn = this.connections.get(uuid);
+    const conn = this.connections.get(wxid);
     if (conn) {
       conn.close();
-      this.connections.delete(uuid);
+      this.connections.delete(wxid);
     }
   }
 
-  private handleMessage(uuid: string, msg: any, currentWxid: string) {
+  private handleMessage(userName: string, msg: any) {
     const chatStore = useChatStore();
     const accountStore = useAccountStore();
+    if (isDebug('socket')) console.log(`[SocketManager:${userName}] 收到原始消息内容:`, JSON.stringify(msg).slice(0, 500));
+
     const msgId = msg.NewMsgId || msg.MsgId || msg.msg_id || msg.new_msg_id || msg.UUID;
     
     const rawType = Number(msg.Type || msg.MsgType || msg.msg_type || 0);
@@ -116,71 +117,81 @@ class GlobalSocketManager {
     // 1. 拦截并处理联系人同步消息 (Type 10001)
     if (rawType === 10001) {
       if (msg.ModContacts) {
-        if (isDebug('socket')) console.log(`[Socket:${uuid}] 收到联系人同步，更新内存镜像`);
+        if (isDebug('socket')) console.log(`[Socket:${userName}] 收到联系人同步 (Type 10001)，更新内存镜像`);
         msg.ModContacts.forEach((contact: any) => {
           const wxid = contact.userName?.str || contact.UserName?.str || contact.wxid || contact.userName;
-          if (wxid) accountStore.updateContact(wxid, contact);
+          if (wxid) accountStore.updateContact(wxid, contact, userName);
         });
       }
-      return; // 协议消息，不进入聊天流
+      return; 
     }
 
-    if (msgId && chatStore.msgIdSet.has(String(msgId))) return;
+    if (msgId && chatStore.msgIdSet.has(String(msgId))) {
+      if (isDebug('socket')) console.log(`[Socket:${userName}] 消息 ID ${msgId} 已存在，跳过处理`);
+      return;
+    }
     
-    const parsedMsg = MessageParser.parse(msg, uuid); // 强制使用 uuid (即 qian9008) 作为 myWxid 传入解析器
+    const parsedMsg = MessageParser.parse(msg, userName); 
+    if (isDebug('socket')) console.log(`[Socket:${userName}] 消息解析完成:`, parsedMsg);
     
     // 2. 拦截状态通知和其他非显示类消息
-    // 注意：放宽过滤条件，对于 unsupported 类型的消息，只要有 content 就放行显示
     if (parsedMsg.type === 'status_notify' || (!parsedMsg.content && parsedMsg.type === 'unsupported')) {
+      if (isDebug('socket')) console.log(`[Socket:${userName}] 消息类型为 ${parsedMsg.type} 且无内容，拦截显示`);
       return;
     }
 
-    if (isDebug('socket')) console.log(`[Socket:${uuid}] 转发有效消息到 Store: ${msgId}, 类型: ${parsedMsg.type}${parsedMsg.type === 'unsupported' ? ` (MsgType: ${rawType})` : ''}`);
-    chatStore.addParsedMessage(uuid, parsedMsg).catch(err => {
-      if (isDebug('socket')) console.error(`[Socket:${uuid}] 存储消息时发生异常:`, err);
+    if (isDebug('socket')) console.log(`[Socket:${userName}] 准备转发有效消息到 ChatStore...`);
+    chatStore.addParsedMessage(userName, parsedMsg).then(() => {
+      if (isDebug('socket')) console.log(`[Socket:${userName}] ChatStore 已成功处理并存储消息: ${msgId}`);
+    }).catch(err => {
+      console.error(`[Socket:${userName}] 存储消息时发生严重异常:`, err);
     });
   }
 
-  private async syncHistory(uuid: string, key: string, currentWxid: string) {
+  private async syncHistory(userName: string, key: string) {
     try {
-      if (isDebug('socket')) console.log(`[SocketManager:${uuid}] 正在通过 syncHistory 尝试补全新消息...`);
+      if (isDebug('socket')) console.log(`[SocketManager:${userName}] 正在通过 syncHistory 尝试补全新消息...`);
       
-      // 1. 调用补录历史消息接口 (NewSyncHistoryMessage)
-      const historyRes: any = await messageApi.syncHistoryMsg(key);
-      const historyList = this.extractMsgList(historyRes);
-      
-      if (historyList.length > 0) {
-        if (isDebug('socket')) console.log(`[SocketManager:${uuid}] syncHistory 补全了 ${historyList.length} 条消息`);
-        historyList.forEach((m: any) => this.handleMessage(uuid, m, currentWxid));
-      } else {
-        if (isDebug('socket')) console.log(`[SocketManager:${uuid}] syncHistory 未拉取到更多新消息`);
+      let hasMore = true;
+      let syncCount = 0;
+      const MAX_SYNC = 5;
+
+      while (hasMore && syncCount < MAX_SYNC) {
+        // 1. 调用补录历史消息接口 (NewSyncHistoryMessage)
+        const historyRes: any = await messageApi.syncHistoryMsg(key);
+        const historyList = this.extractMsgList(historyRes);
+        
+        if (historyList.length > 0) {
+          if (isDebug('socket')) console.log(`[SocketManager:${userName}] syncHistory 第 ${syncCount + 1} 次同步，补全了 ${historyList.length} 条消息`);
+          historyList.forEach((m: any) => this.handleMessage(userName, m));
+          syncCount++;
+          if (historyList.length < 5) { 
+            hasMore = false;
+          }
+        } else {
+          if (isDebug('socket')) console.log(`[SocketManager:${userName}] syncHistory 第 ${syncCount + 1} 次未拉取到更多新消息`);
+          hasMore = false;
+        }
       }
     } catch (e) {
-      if (isDebug('socket')) console.warn(`[SocketManager:${uuid}] syncHistory 失败:`, e);
+      if (isDebug('socket')) console.warn(`[SocketManager:${userName}] syncHistory 失败:`, e);
     }
   }
 
   private extractMsgList(data: any): any[] {
     if (!data) return [];
     
-    // 如果 data 本身就是数组，直接返回
     if (Array.isArray(data)) {
       return data;
     }
 
-    // 微信协议中常见的几个消息容器
-    // 根据你的日志反馈，响应中包含 'List'，这可能就是消息列表
     let list = data.AddMsgs || data.add_msgs || data.List || data.list || data.ModMsgs || data.mod_msgs || data.AddMsgList;
     
-    // 深度搜索逻辑：如果外层没有，尝试找 Data 内部
     if (!list && data.Data && typeof data.Data === 'object') {
       list = data.Data.AddMsgs || data.Data.List || data.Data.list || data.Data.add_msgs || data.Data.AddMsgList;
     }
 
     if (Array.isArray(list)) {
-      if (list.length > 0) {
-        if (isDebug('socket')) console.log(`[Debug:Redis] 成功提取到 ${list.length} 条原始消息记录`);
-      }
       return list;
     }
     

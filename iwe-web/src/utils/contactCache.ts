@@ -301,43 +301,58 @@ export const contactCache = {
     // 需要迁移的 Stores
     const stores = [STORE_NAME, MSG_STORE, CONV_STORE];
     
-    for (const storeName of stores) {
-      const transaction = db.transaction(storeName, 'readwrite');
-      const store = transaction.objectStore(storeName);
-      
-      // 使用索引找到所有旧数据
-      if (store.indexNames.contains('accountUuid')) {
-        const index = store.index('accountUuid');
-        const request = index.openCursor(IDBKeyRange.only(oldUuid));
+    const promises = stores.map(storeName => {
+      return new Promise((resolve, reject) => {
+        const transaction = db.transaction(storeName, 'readwrite');
+        const store = transaction.objectStore(storeName);
         
-        request.onsuccess = (e: any) => {
-          const cursor = e.target.result;
-          if (cursor) {
-            const data = cursor.value;
-            // 更新关联 ID
-            data.accountUuid = newUuid;
-            
-            // 更新主键 (如果是复合主键)
-            if (storeName === STORE_NAME) {
-              // 删除旧键
-              store.delete(cursor.primaryKey);
-              // 修改数据并重新存入
-              data.uid_wxid = `${newUuid}_${data.wxid}`;
-              store.put(data);
-            } else if (storeName === CONV_STORE) {
-              store.delete(cursor.primaryKey);
-              data.uid_partner = `${newUuid}_${data.wxid}`;
-              store.put(data);
-            } else {
-              // message 等普通主键直接更新
-              cursor.update(data);
+        transaction.oncomplete = () => resolve(true);
+        transaction.onerror = (e) => reject(e);
+
+        // 使用索引找到所有旧数据
+        if (store.indexNames.contains('accountUuid')) {
+          const index = store.index('accountUuid');
+          const request = index.openCursor(IDBKeyRange.only(oldUuid));
+          
+          request.onsuccess = (e: any) => {
+            const cursor = e.target.result;
+            if (cursor) {
+              const data = cursor.value;
+              // 更新关联 ID
+              data.accountUuid = newUuid;
+              
+              // 更新主键 (如果是复合主键)
+              if (storeName === STORE_NAME) {
+                // 删除旧键
+                store.delete(cursor.primaryKey);
+                // 修改数据并重新存入
+                data.uid_wxid = `${newUuid}_${data.wxid}`;
+                store.put(data);
+              } else if (storeName === CONV_STORE) {
+                store.delete(cursor.primaryKey);
+                data.uid_partner = `${newUuid}_${data.wxid}`;
+                store.put(data);
+              } else {
+                // message 等普通主键直接更新
+                cursor.update(data);
+              }
+              cursor.continue();
             }
-            cursor.continue();
-          }
-        };
-      }
+          };
+        } else {
+          // 如果没有索引，直接完成该 store 的 Promise
+          resolve(true);
+        }
+      });
+    });
+
+    try {
+      await Promise.all(promises);
+      console.log(`[DB] 完成账号数据迁移: ${oldUuid} -> ${newUuid}`);
+    } catch (err) {
+      console.error(`[DB] 账号数据迁移失败: ${oldUuid} -> ${newUuid}`, err);
+      throw err;
     }
-    console.log(`[DB] 完成账号数据迁移: ${oldUuid} -> ${newUuid}`);
   },
 
   async clearGroupMessages() {
