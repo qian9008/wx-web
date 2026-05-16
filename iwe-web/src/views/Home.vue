@@ -112,13 +112,13 @@
           >
             <a-badge :count="conv.unread" :dot="false" class="avatar-badge">
               <a-avatar :size="42" shape="square" :style="{ backgroundColor: '#ffb400' }">
-                <img v-if="conv.avatar" :src="conv.avatar" />
-                <template v-else>{{ conv.nickname ? conv.nickname[0] : 'C' }}</template>
+                <img v-if="getConvAvatar(conv)" :src="getConvAvatar(conv)" />
+                <template v-else>{{ getConvName(conv) ? getConvName(conv)[0] : 'C' }}</template>
               </a-avatar>
             </a-badge>
             <div class="info">
               <div class="title">
-                <span class="name">{{ formatText(conv.nickname) }}</span>
+                <span class="name">{{ getConvName(conv) }}</span>
                 <span class="time">{{ formatTime(conv.time) }}</span>
               </div>
               <div class="desc">{{ formatText(conv.lastMsg) }}</div>
@@ -153,7 +153,7 @@
             v-lazy-contact="getContactId(contact)"
           >
             <a-avatar :size="42" shape="square" :style="{ backgroundColor: '#337ecc' }">
-              <img v-if="getContactAvatar(contact)" :src="getContactAvatar(contact)" />
+              <img v-if="getContactAvatar(contact)" :src="accountStore.avatarBlobMap[getContactAvatar(contact)] || getContactAvatar(contact)" />
               <template v-else>{{ getContactName(contact)[0] }}</template>
             </a-avatar>
             <div class="info">
@@ -893,6 +893,39 @@ const getContactAvatar = (c: any) => {
   if (!rawUrl) return '';
   
   // 触发异步加载/从内存缓存读取
+  accountStore.getAvatarUrl(rawUrl); // 确保触发下载
+  return accountStore.avatarBlobMap[rawUrl] || rawUrl;
+};
+
+const getConvName = (conv: any) => {
+  if (conv.nickname && conv.nickname !== conv.wxid) return formatText(conv.nickname);
+  const contact = accountStore.contactMap[conv.wxid];
+  if (contact) {
+    const name = getContactName(contact);
+    if (name && name !== conv.wxid) return formatText(name);
+  }
+  if (conv.wxid === accountStore.activeAccountUuid) {
+    const activeAcc = accountStore.accounts.find(a => a.uuid === accountStore.activeAccountUuid);
+    if (activeAcc && activeAcc.nickname) return activeAcc.nickname;
+  }
+  return formatText(conv.nickname);
+};
+
+const getConvAvatar = (conv: any) => {
+  let rawUrl = conv.avatar;
+  if (!rawUrl) {
+    const contact = accountStore.contactMap[conv.wxid];
+    if (contact) {
+      const url = contact.smallHeadImgUrl || contact.SmallHeadImgUrl || contact.headImgUrl || contact.HeadImgUrl || contact.avatar || '';
+      rawUrl = typeof url === 'string' ? url.trim().replace(/`/g, '') : '';
+    } else if (conv.wxid === accountStore.activeAccountUuid) {
+      const activeAcc = accountStore.accounts.find(a => a.uuid === accountStore.activeAccountUuid);
+      rawUrl = activeAcc?.avatar || '';
+    }
+  }
+  if (!rawUrl) return '';
+  // 触发异步加载/从内存缓存读取
+  accountStore.getAvatarUrl(rawUrl); // 确保触发下载
   return accountStore.avatarBlobMap[rawUrl] || rawUrl;
 };
 

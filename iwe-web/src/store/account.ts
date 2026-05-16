@@ -322,6 +322,35 @@ export const useAccountStore = defineStore('account', {
       };
       
       await contactCache.set(wxid, detail, targetUuid);
+
+      // 反向同步：更新会话列表中的昵称和头像
+      const chatStore = useChatStore();
+      if (chatStore.accountConversations[targetUuid]) {
+        const convs = [...chatStore.accountConversations[targetUuid]];
+        const convIdx = convs.findIndex(c => c.wxid === wxid);
+        
+        if (convIdx > -1) {
+          const conv = { ...convs[convIdx] };
+          
+          // 获取最新名称逻辑 (备注 > 昵称 > wxid)
+          const newName = detail.remark?.str || detail.Remark?.str || detail.remark || detail.Remark 
+                        || detail.nickName?.str || detail.NickName?.str || detail.nickName || detail.NickName;
+          const newAvatar = detail.smallHeadImgUrl || detail.SmallHeadImgUrl || detail.headImgUrl || detail.avatar;
+          
+          if (newName) conv.nickname = newName;
+          if (newAvatar) {
+            conv.avatar = newAvatar;
+            // 立即触发头像预下载并存入缓存
+            this.getAvatarUrl(newAvatar);
+          }
+          
+          convs[convIdx] = conv;
+          chatStore.accountConversations[targetUuid] = convs;
+          
+          // 同时持久化会话更新到 DB
+          contactCache.saveConversation(targetUuid, JSON.parse(JSON.stringify(conv)));
+        }
+      }
     },
 
     async syncFullContactList(uuid: string, key: string, force = false) {
@@ -450,7 +479,12 @@ export const useAccountStore = defineStore('account', {
 
       const ids = Array.isArray(wxids) ? wxids : [wxids];
       const map = this.accountContactMaps[targetUuid] || {};
-      const needsFetch = ids.filter(id => !map[id] || map[id].isPlaceholder);
+      
+      // 过滤掉自己、文件传输助手，以及已经有完整数据的联系人
+      const needsFetch = ids.filter(id => {
+        if (id === targetUuid || id === 'filehelper') return false;
+        return !map[id] || map[id].isPlaceholder;
+      });
       
       needsFetch.forEach(id => {
         if (!this.detailsQueue.includes(id)) {
@@ -477,7 +511,17 @@ export const useAccountStore = defineStore('account', {
         while (this.detailsQueue.length > 0) {
           const batch = this.detailsQueue.splice(0, batchSize);
           const details: any = await messageApi.getContactDetailsList(key, batch);
-          const detailList = details.Data || details || [];
+          
+          let detailList: any[] = [];
+          if (Array.isArray(details)) detailList = details;
+          else if (details?.Data && Array.isArray(details.Data)) detailList = details.Data;
+          else if (details?.Data?.ContactList && Array.isArray(details.Data.ContactList)) detailList = details.Data.ContactList;
+          else if (details?.Data?.List && Array.isArray(details.Data.List)) detailList = details.Data.List;
+          else if (details?.ContactList && Array.isArray(details.ContactList)) detailList = details.ContactList;
+          
+          if (detailList.length === 0 && details?.Code !== 0) {
+            console.warn(`[AccountStore] 补全队列批次请求未返回有效数组，可能包含无效ID或触发限流:`, details);
+          }
           
           for (const d of detailList) {
             const wxid = d.userName?.str || d.UserName?.str || d.wxid || d.userName || d.UserName;

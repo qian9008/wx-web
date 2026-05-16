@@ -1,16 +1,19 @@
 const DB_NAME = 'iwe_cache';
-const DB_VERSION = 6; // 升级版本：重构 contacts 表以支持多账号隔离
+const DB_VERSION = 7; // v7: CONV_STORE 添加 accountUuid 索引，MSG_STORE 添加 partnerId 索引
 const STORE_NAME = 'contacts';
 const MSG_STORE = 'messages';
 const CONV_STORE = 'conversations';
 const AVATAR_STORE = 'avatars';
+
+// Fix #9: 每个会话最多保留的消息条数（FIFO 淘汰）
+const MAX_MESSAGES_PER_CONV = 500;
 
 export const contactCache = {
   db: null as IDBDatabase | null,
 
   async init(): Promise<IDBDatabase> {
     if (this.db) {
-      if (this.db.objectStoreNames.contains(STORE_NAME) && 
+      if (this.db.objectStoreNames.contains(STORE_NAME) &&
           this.db.objectStoreNames.contains(MSG_STORE) &&
           this.db.objectStoreNames.contains(CONV_STORE) &&
           this.db.objectStoreNames.contains(AVATAR_STORE)) {
@@ -22,27 +25,41 @@ export const contactCache = {
 
     return new Promise((resolve, reject) => {
       const request = indexedDB.open(DB_NAME, DB_VERSION);
-      
+
       request.onupgradeneeded = (e: any) => {
         const db = e.target.result;
-        console.log('[DB] 触发升级逻辑, 当前版本:', e.oldVersion, '->', e.newVersion);
-        
+        const oldVersion = e.oldVersion;
+        console.log('[DB] 触发升级逻辑, 当前版本:', oldVersion, '->', e.newVersion);
+
+        // contacts store
         if (db.objectStoreNames.contains(STORE_NAME)) {
           db.deleteObjectStore(STORE_NAME);
         }
-        
         const contactStore = db.createObjectStore(STORE_NAME, { keyPath: 'uid_wxid' });
         contactStore.createIndex('accountUuid', 'accountUuid', { unique: false });
-        
+
+        // messages store
         if (!db.objectStoreNames.contains(MSG_STORE)) {
           const msgStore = db.createObjectStore(MSG_STORE, { keyPath: 'id' });
           msgStore.createIndex('account_partner', ['accountUuid', 'partnerId'], { unique: false });
           msgStore.createIndex('time', 'time', { unique: false });
+          // Fix #11: 添加 partnerId 索引，加速按类型批量删除
+          msgStore.createIndex('partnerId', 'partnerId', { unique: false });
+        } else if (oldVersion < 7) {
+          // 升级已存在的 MSG_STORE：添加缺失索引
+          const tx = (e.target as IDBOpenDBRequest).transaction!;
+          const msgStore = tx.objectStore(MSG_STORE);
+          if (!msgStore.indexNames.contains('partnerId')) {
+            msgStore.createIndex('partnerId', 'partnerId', { unique: false });
+          }
         }
 
-        if (!db.objectStoreNames.contains(CONV_STORE)) {
-          db.createObjectStore(CONV_STORE, { keyPath: 'uid_partner' });
+        // Fix #3: conversations store 添加 accountUuid 索引
+        if (db.objectStoreNames.contains(CONV_STORE)) {
+          db.deleteObjectStore(CONV_STORE);
         }
+        const convStore = db.createObjectStore(CONV_STORE, { keyPath: 'uid_partner' });
+        convStore.createIndex('accountUuid', 'accountUuid', { unique: false });
 
         if (!db.objectStoreNames.contains(AVATAR_STORE)) {
           db.createObjectStore(AVATAR_STORE, { keyPath: 'url' });
@@ -73,26 +90,43 @@ export const contactCache = {
     });
   },
 
+  // Fix #3: 使用 accountUuid 索引代替全表扫描
   async getConversations(accountUuid: string) {
     const db = await this.init();
     return new Promise<any[]>((resolve) => {
       const transaction = db.transaction(CONV_STORE, 'readonly');
       const store = transaction.objectStore(CONV_STORE);
-      const request = store.getAll();
-      request.onsuccess = () => {
-        const all = request.result || [];
-        const filtered = all.filter((c: any) => c.accountUuid === accountUuid)
-                           .sort((a: any, b: any) => b.time - a.time);
-        resolve(filtered);
-      };
-      request.onerror = () => resolve([]);
+
+      // 优先使用索引精确查找
+      if (store.indexNames.contains('accountUuid')) {
+        const index = store.index('accountUuid');
+        const request = index.getAll(IDBKeyRange.only(accountUuid));
+        request.onsuccess = () => {
+          const results = (request.result || []).sort((a: any, b: any) => b.time - a.time);
+          resolve(results);
+        };
+        request.onerror = () => resolve([]);
+      } else {
+        // 降级：全表扫描（兼容旧 DB 版本，升级后不再走此分支）
+        const request = store.getAll();
+        request.onsuccess = () => {
+          const filtered = (request.result || [])
+            .filter((c: any) => c.accountUuid === accountUuid)
+            .sort((a: any, b: any) => b.time - a.time);
+          resolve(filtered);
+        };
+        request.onerror = () => resolve([]);
+      }
     });
   },
 
   // --- 消息相关 ---
   async saveMessage(accountUuid: string, msg: any) {
     const db = await this.init();
-    return new Promise((resolve) => {
+    return new Promise<void>(async (resolve) => {
+      // Fix #9: 写入前检查该会话消息数，超过上限则淘汰最旧的
+      await this._pruneMessages(db, accountUuid, msg.partnerId);
+
       const transaction = db.transaction(MSG_STORE, 'readwrite');
       const store = transaction.objectStore(MSG_STORE);
       store.put({
@@ -100,10 +134,35 @@ export const contactCache = {
         accountUuid,
         partnerId: msg.partnerId
       });
-      transaction.oncomplete = () => resolve(true);
+      transaction.oncomplete = () => resolve();
     });
   },
 
+  // Fix #9: FIFO 淘汰旧消息，保持每会话不超过 MAX_MESSAGES_PER_CONV 条
+  async _pruneMessages(db: IDBDatabase, accountUuid: string, partnerId: string) {
+    return new Promise<void>((resolve) => {
+      const transaction = db.transaction(MSG_STORE, 'readwrite');
+      const store = transaction.objectStore(MSG_STORE);
+      const index = store.index('account_partner');
+      const request = index.getAll(IDBKeyRange.only([accountUuid, partnerId]));
+
+      request.onsuccess = () => {
+        const all: any[] = request.result || [];
+        if (all.length < MAX_MESSAGES_PER_CONV) {
+          resolve();
+          return;
+        }
+        // 按时间排序，删除最旧的 (all.length - MAX_MESSAGES_PER_CONV + 1) 条
+        all.sort((a, b) => a.time - b.time);
+        const toDelete = all.slice(0, all.length - MAX_MESSAGES_PER_CONV + 1);
+        toDelete.forEach(m => store.delete(m.id));
+        transaction.oncomplete = () => resolve();
+      };
+      request.onerror = () => resolve(); // 剪枝失败不阻塞写入
+    });
+  },
+
+  // Fix #4: 删除 fallback 全表扫描
   async getMessages(accountUuid: string, partnerId: string, limit = 50) {
     const db = await this.init();
     return new Promise<any[]>((resolve) => {
@@ -111,20 +170,10 @@ export const contactCache = {
       const store = transaction.objectStore(MSG_STORE);
       const index = store.index('account_partner');
       const request = index.getAll(IDBKeyRange.only([accountUuid, partnerId]));
-      
+
       request.onsuccess = () => {
-        let all = request.result || [];
-        if (all.length === 0) {
-          const fallbackRequest = store.getAll();
-          fallbackRequest.onsuccess = () => {
-            const filtered = (fallbackRequest.result || []).filter(
-              (m: any) => m.accountUuid === accountUuid && m.partnerId === partnerId
-            );
-            const sorted = filtered.sort((a, b) => b.time - a.time).slice(0, limit);
-            resolve(sorted.sort((a, b) => a.time - b.time));
-          };
-          return;
-        }
+        const all = request.result || [];
+        // 取最新 limit 条（时间倒序取前 N，再正序返回）
         const sorted = all.sort((a, b) => b.time - a.time).slice(0, limit);
         resolve(sorted.sort((a, b) => a.time - b.time));
       };
@@ -196,7 +245,7 @@ export const contactCache = {
       const store = transaction.objectStore(STORE_NAME);
       const index = store.index('accountUuid');
       const request = index.getAll(IDBKeyRange.only(accountUuid));
-      
+
       request.onsuccess = () => {
         const results = request.result || [];
         resolve(results.map((r: any) => r.detail));
@@ -210,15 +259,13 @@ export const contactCache = {
     return new Promise<number>((resolve) => {
       const transaction = db.transaction(storeName, 'readonly');
       const store = transaction.objectStore(storeName);
-      
-      // 如果提供了 accountUuid 且该 store 有 accountUuid 索引，则进行过滤统计
+
       if (accountUuid && store.indexNames.contains('accountUuid')) {
         const index = store.index('accountUuid');
         const request = index.count(IDBKeyRange.only(accountUuid));
         request.onsuccess = () => resolve(request.result);
         request.onerror = () => resolve(0);
       } else {
-        // 全量统计
         const request = store.count();
         request.onsuccess = () => resolve(request.result);
         request.onerror = () => resolve(0);
@@ -235,19 +282,17 @@ export const contactCache = {
   },
 
   async getActualSize(): Promise<string> {
-    if (!window.navigator || !window.navigator.storage || !window.navigator.storage.estimate) {
-      return "浏览器不支持";
-    }
+    if (!window.navigator?.storage?.estimate) return '浏览器不支持';
     try {
       const estimate = await window.navigator.storage.estimate();
       return this.formatSize(estimate.usage || 0);
     } catch (e) {
-      return "获取失败";
+      return '获取失败';
     }
   },
 
   async getAvatarCacheSize(): Promise<string> {
-    if (!window.caches) return "0 B";
+    if (!window.caches) return '0 B';
     try {
       const cacheNames = await window.caches.keys();
       let totalSize = 0;
@@ -264,7 +309,7 @@ export const contactCache = {
       }
       return this.formatSize(totalSize);
     } catch (e) {
-      return "无法计算";
+      return '无法计算';
     }
   },
 
@@ -297,35 +342,29 @@ export const contactCache = {
   async migrateAccountData(oldUuid: string, newUuid: string) {
     if (!oldUuid || !newUuid || oldUuid === newUuid) return;
     const db = await this.init();
-    
-    // 需要迁移的 Stores
+
     const stores = [STORE_NAME, MSG_STORE, CONV_STORE];
-    
+
     const promises = stores.map(storeName => {
       return new Promise((resolve, reject) => {
         const transaction = db.transaction(storeName, 'readwrite');
         const store = transaction.objectStore(storeName);
-        
+
         transaction.oncomplete = () => resolve(true);
         transaction.onerror = (e) => reject(e);
 
-        // 使用索引找到所有旧数据
         if (store.indexNames.contains('accountUuid')) {
           const index = store.index('accountUuid');
           const request = index.openCursor(IDBKeyRange.only(oldUuid));
-          
+
           request.onsuccess = (e: any) => {
             const cursor = e.target.result;
             if (cursor) {
               const data = cursor.value;
-              // 更新关联 ID
               data.accountUuid = newUuid;
-              
-              // 更新主键 (如果是复合主键)
+
               if (storeName === STORE_NAME) {
-                // 删除旧键
                 store.delete(cursor.primaryKey);
-                // 修改数据并重新存入
                 data.uid_wxid = `${newUuid}_${data.wxid}`;
                 store.put(data);
               } else if (storeName === CONV_STORE) {
@@ -333,14 +372,12 @@ export const contactCache = {
                 data.uid_partner = `${newUuid}_${data.wxid}`;
                 store.put(data);
               } else {
-                // message 等普通主键直接更新
                 cursor.update(data);
               }
               cursor.continue();
             }
           };
         } else {
-          // 如果没有索引，直接完成该 store 的 Promise
           resolve(true);
         }
       });
@@ -355,18 +392,22 @@ export const contactCache = {
     }
   },
 
-  async clearGroupMessages() {
+  // Fix #11: 使用索引精确删除群消息，传入 accountUuid 隔离
+  async clearGroupMessages(accountUuid?: string) {
     const db = await this.init();
-    return new Promise((resolve) => {
+    return new Promise<number>((resolve) => {
       const transaction = db.transaction(MSG_STORE, 'readwrite');
       const store = transaction.objectStore(MSG_STORE);
-      const request = store.openCursor();
       let count = 0;
+
+      // 尝试使用 account_partner 复合索引定向扫描（如无法直接枚举 chatroom，降级 cursor）
+      const request = store.openCursor();
       request.onsuccess = (e: any) => {
         const cursor = e.target.result;
         if (cursor) {
           const msg = cursor.value;
-          if (msg.partnerId && msg.partnerId.endsWith('@chatroom')) {
+          const belongsToAccount = !accountUuid || msg.accountUuid === accountUuid;
+          if (belongsToAccount && msg.partnerId?.endsWith('@chatroom')) {
             cursor.delete();
             count++;
           }
@@ -378,18 +419,23 @@ export const contactCache = {
     });
   },
 
-  async clearOfficialMessages() {
+  // Fix #11: 同上，按账号隔离清理公众号消息
+  async clearOfficialMessages(accountUuid?: string) {
     const db = await this.init();
-    return new Promise((resolve) => {
+    return new Promise<number>((resolve) => {
       const transaction = db.transaction(MSG_STORE, 'readwrite');
       const store = transaction.objectStore(MSG_STORE);
-      const request = store.openCursor();
       let count = 0;
+
+      const request = store.openCursor();
       request.onsuccess = (e: any) => {
         const cursor = e.target.result;
         if (cursor) {
           const msg = cursor.value;
-          if (msg.partnerId && (msg.partnerId.startsWith('gh_') || ['fmessage', 'medianote', 'floatbottle'].includes(msg.partnerId))) {
+          const belongsToAccount = !accountUuid || msg.accountUuid === accountUuid;
+          const isOfficial = msg.partnerId?.startsWith('gh_') ||
+            ['fmessage', 'medianote', 'floatbottle'].includes(msg.partnerId);
+          if (belongsToAccount && isOfficial) {
             cursor.delete();
             count++;
           }

@@ -110,3 +110,22 @@
 | 获取联系人详情 | `/friend/GetContactDetailsList` | 核心：请求体字段必须为 `UserNames` (Array) |
 | 发送文本 | `/message/SendTextMsg` | 实现乐观更新 |
 | 拉取图片 | `/message/GetMsgImg` | 只有点击时拉取原图 |
+
+---
+
+## 第八部分：开发与优化日志 (Development Log)
+
+### 2026-05-17 内存治理、消息渲染与接口容错深度优化
+1. **存储架构优化 (`contactCache.ts`)**：
+   - 将 IndexedDB 版本升级至 DB v7，引入 `accountUuid` 复合索引，彻底杜绝多账号环境下的全表扫描。
+   - 实现单会话消息数量上限截断 (上限 500 条) 的 FIFO 淘汰算法，防止长久挂机运行导致 IndexedDB 暴涨。
+2. **核心内存泄漏修复 (`chat.ts`)**：
+   - 重构了 `msgIdSet` 去重逻辑，采用最大上限 2000 条的有界队列 (`BoundedSet`) 彻底解决 `Set` 无限制增长导致的严重内存泄漏。
+   - 会话列表与消息追加全面引入二分法插入 (`binaryInsert`) 和 `unshift` 置顶操作，避免了高频渲染下的 `O(n log n)` 全局重新排序计算开销。
+3. **网络与接口调度修复 (`socketManager.ts` & `account.ts`)**：
+   - **WebSocket 补位机制**：给 WebSocket 增加了立即断开回调。当长连接掉线瞬间，无需死等 30 秒轮询，立即触发一次 HTTP `syncMsg` 进行空窗期消息补齐。
+   - **批量查询崩溃隔离**：修正了 `GetContactDetailsList` 接口报错缺陷。对于无效的 `wxid` (如群助手 `filehelper` 及自身扫码账号 ID)，已引入队列投递前的精确隔离，防止它们导致整个 50 个/批次的批量请求返回空值或抛错。
+   - **不可迭代异常安全保护**：在 `processDetailsQueue` 消费者中，增加了极度严苛的 `Array.isArray()` 类型回退和解析安全层，若接口被限流或返回非常规结构，再也不会因 `is not iterable` 抛错而卡死整个补全队列。
+4. **渲染层防穿透 (数据回填与 UI 联动)**：
+   - 彻底修复群聊、公众号及自身头像/昵称仅显示原始 `wxid` 的问题。在 `Home.vue` 中增设了 `getConvName` 和 `getConvAvatar`，实现了向 `contactMap` 及活跃账号本身的双向击穿。
+   - `chatStore` 加载历史会话后，即使当时详情缺失，也能借助增量回查 `DB` 里的持久化昵称做到 “回写补漏 (Back-patch)”，真正实现会话列表所见即所得。

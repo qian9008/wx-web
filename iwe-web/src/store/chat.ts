@@ -145,15 +145,34 @@ export const useChatStore = defineStore('chat', {
 
       let conv: Conversation;
       if (existingIdx === -1) {
+        const accountStore = useAccountStore();
+        const contact = accountStore.accountContactMaps[userName]?.[wxid];
+        
+        // 优先级：备注 > 昵称 > wxid
+        const displayName = contact?.remark?.str || contact?.Remark?.str || contact?.remark || contact?.Remark 
+                        || contact?.nickName?.str || contact?.NickName?.str || contact?.nickName || contact?.NickName 
+                        || wxid;
+        const avatarUrl = contact?.smallHeadImgUrl || contact?.SmallHeadImgUrl || contact?.headImgUrl || contact?.avatar || '';
+
         conv = {
           wxid,
-          nickname: wxid,
-          avatar: '',
+          nickname: displayName,
+          avatar: avatarUrl,
           lastMsg: msg.content,
           time: msg.time,
           unread: msg.isSelf ? 0 : 1
         };
         list.unshift(conv); // 新会话直接置顶
+        
+        // 1. 触发详情补录 (如果当前是原始 ID)
+        if (displayName === wxid) {
+          accountStore.enqueueContactDetails(wxid, userName);
+        }
+
+        // 2. 立即触发头像预下载
+        if (avatarUrl) {
+          accountStore.getAvatarUrl(avatarUrl);
+        }
       } else {
         conv = { ...list[existingIdx] };
         conv.lastMsg = msg.content;
@@ -206,9 +225,84 @@ export const useChatStore = defineStore('chat', {
     async loadConversations(userName: string) {
       if (!userName) return;
 
+      const accountStore = useAccountStore();
       const dbConvs = await contactCache.getConversations(userName);
       this.accountConversations[userName] = dbConvs;
       console.log(`[ChatStore] 已为账号 ${userName} 加载 ${dbConvs.length} 个历史会话`);
+
+      if (dbConvs.length === 0) return;
+
+      // 批量查询 contacts DB，避免逐条读取
+      const allWxids = dbConvs.map(c => c.wxid);
+      const cachedContacts = await contactCache.getMultiple(allWxids, userName);
+
+      // 三重校验：只有三者都无数据时，才真正需要请求 API
+      const needFetch: string[] = [];
+      const convUpdates: Array<{ idx: number; nickname: string; avatar: string }> = [];
+
+      dbConvs.forEach((c, idx) => {
+        // 辅助函数：从联系人对象中提取昵称（备注 > 昵称）
+        const extractName = (contact: any): string => {
+          return contact?.remark?.str || contact?.Remark?.str || contact?.remark || contact?.Remark
+              || contact?.nickName?.str || contact?.NickName?.str || contact?.nickName || contact?.NickName
+              || '';
+        };
+        const extractAvatar = (contact: any): string => {
+          return contact?.smallHeadImgUrl || contact?.SmallHeadImgUrl
+              || contact?.headImgUrl || contact?.HeadImgUrl || contact?.avatar || '';
+        };
+
+        // 校验1：会话记录本身是否已有完整数据
+        const convHasName   = c.nickname && c.nickname !== c.wxid;
+        const convHasAvatar = !!c.avatar;
+        if (convHasName && convHasAvatar) return; // 完整，跳过
+
+        // 校验2：contacts DB 是否已有该联系人
+        const dbContact = cachedContacts[c.wxid];
+        const dbName    = dbContact ? extractName(dbContact) : '';
+        const dbAvatar  = dbContact ? extractAvatar(dbContact) : '';
+        if (dbName) {
+          // DB 里有数据但会话记录未同步，回写内存以修正显示
+          if (!convHasName || !convHasAvatar) {
+            convUpdates.push({
+              idx,
+              nickname: dbName || c.nickname,
+              avatar:   dbAvatar || c.avatar
+            });
+          }
+          return; // DB 有数据，不请求 API
+        }
+
+        // 校验3：内存 contactMap 是否已有（可能尚未写入 DB）
+        const memContact = accountStore.accountContactMaps[userName]?.[c.wxid];
+        if (memContact && !memContact.isPlaceholder && extractName(memContact)) return;
+
+        // 三重校验均无数据，才加入请求队列
+        needFetch.push(c.wxid);
+      });
+
+      // 回写：修正会话列表中昵称仍为 wxid 的记录（用 DB 数据补全）
+      if (convUpdates.length > 0) {
+        const convsCopy = [...(this.accountConversations[userName] || [])];
+        convUpdates.forEach(({ idx, nickname, avatar }) => {
+          convsCopy[idx] = { ...convsCopy[idx], nickname, avatar };
+          contactCache.saveConversation(userName, JSON.parse(JSON.stringify(convsCopy[idx])));
+        });
+        this.accountConversations[userName] = convsCopy;
+        console.log(`[ChatStore] 已用本地 DB 数据回写 ${convUpdates.length} 条会话昵称`);
+      }
+
+      if (needFetch.length > 0) {
+        console.log(`[ChatStore] ${needFetch.length}/${dbConvs.length} 个联系人需请求 API 补全详情`);
+        accountStore.enqueueContactDetails(needFetch, userName);
+      } else {
+        console.log(`[ChatStore] 所有 ${dbConvs.length} 个会话联系人详情完整，跳过 API`);
+      }
+
+      // 预下载头像（仅有 URL 的）
+      dbConvs.forEach(c => {
+        if (c.avatar) accountStore.getAvatarUrl(c.avatar);
+      });
     },
 
     async clearGroupMessages(userName: string) {

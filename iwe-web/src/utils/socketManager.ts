@@ -11,10 +11,9 @@ class GlobalSocketManager {
 
   public async registerAccount(userName: string, key: string) {
     if (!userName) return;
-    
+
     const accountStore = useAccountStore();
-    // 统一使用 userName 作为 Key
-    const realWxid = userName; 
+    const realWxid = userName;
 
     const existing = this.connections.get(realWxid);
     if (existing && existing.isConnected) {
@@ -38,34 +37,38 @@ class GlobalSocketManager {
     } else {
       wsBaseUrl = `ws://${wsBaseUrl}`;
     }
-    
-    // 初始化同步 (不再阻塞主流程，采用并行静默同步策略)
+
     const service = new IMService(
-      realWxid, // 使用真实 userName 作为 IMService 内部标识
+      realWxid,
       `${wsBaseUrl}/ws/GetSyncMsg`,
-      (msg) => this.handleMessage(realWxid, msg) // 统一使用 userName(realWxid)
+      (msg) => this.handleMessage(realWxid, msg),
+      // Fix #7: WS 断开时立即发起一次轮询补位，不等待下一个 30s 周期
+      () => this.pollOnce(realWxid, key)
     );
 
     service.connect(key);
-    this.connections.set(realWxid, service); // 外部 Map key 也统一为 realWxid
-    
+    this.connections.set(realWxid, service);
+
     // 初始化历史同步
     this.syncHistory(realWxid, key);
 
-    // 开启低频 HTTP 轮询补位
+    // 开启低频 HTTP 轮询补位（WS 正常时自动跳过）
     this.startPolling(realWxid, key);
   }
 
-  private async syncRedisMsg(uuid: string, key: string) {
-    /*
+  // Fix #7: 单次即时轮询（WS 断开时触发）
+  private async pollOnce(uuid: string, key: string) {
     try {
-      if (isDebug('socket')) console.log(`[SocketManager:${uuid}] 正在同步 Redis 极速快照...`);
-      const res: any = await messageApi.getRedisSyncMsg(key);
-      ...
+      if (isDebug('socket')) console.log(`[SocketManager:${uuid}] WS 断开，立即发起一次补位轮询`);
+      const res: any = await messageApi.syncMsg(key, 0);
+      const msgList = this.extractMsgList(res);
+      if (msgList.length > 0) {
+        if (isDebug('socket')) console.log(`[PollOnce:${uuid}] 补位拉取到 ${msgList.length} 条新消息`);
+        msgList.forEach((m: any) => this.handleMessage(uuid, m));
+      }
     } catch (e) {
-      if (isDebug('socket')) console.warn(`[SocketManager:${uuid}] Redis 快照同步跳过或失败:`, e);
+      if (isDebug('socket')) console.warn(`[PollOnce:${uuid}] 补位轮询失败:`, e);
     }
-    */
   }
 
   private startPolling(uuid: string, key: string) {
@@ -75,7 +78,7 @@ class GlobalSocketManager {
       try {
         const service = this.connections.get(uuid);
         if (service?.isConnected) {
-          // WS 正常连接时跳过轮询
+          // WS 正常连接时跳过常规轮询
         } else {
           const res: any = await messageApi.syncMsg(key, 0);
           const msgList = this.extractMsgList(res);
@@ -111,9 +114,9 @@ class GlobalSocketManager {
     if (isDebug('socket')) console.log(`[SocketManager:${userName}] 收到原始消息内容:`, JSON.stringify(msg).slice(0, 500));
 
     const msgId = msg.NewMsgId || msg.MsgId || msg.msg_id || msg.new_msg_id || msg.UUID;
-    
+
     const rawType = Number(msg.Type || msg.MsgType || msg.msg_type || 0);
-    
+
     // 1. 拦截并处理联系人同步消息 (Type 10001)
     if (rawType === 10001) {
       if (msg.ModContacts) {
@@ -123,17 +126,17 @@ class GlobalSocketManager {
           if (wxid) accountStore.updateContact(wxid, contact, userName);
         });
       }
-      return; 
+      return;
     }
 
-    if (msgId && chatStore.msgIdSet.has(String(msgId))) {
+    if (msgId && chatStore._msgIdDedup.has(String(msgId))) {
       if (isDebug('socket')) console.log(`[Socket:${userName}] 消息 ID ${msgId} 已存在，跳过处理`);
       return;
     }
-    
-    const parsedMsg = MessageParser.parse(msg, userName); 
+
+    const parsedMsg = MessageParser.parse(msg, userName);
     if (isDebug('socket')) console.log(`[Socket:${userName}] 消息解析完成:`, parsedMsg);
-    
+
     // 2. 拦截状态通知和其他非显示类消息
     if (parsedMsg.type === 'status_notify' || (!parsedMsg.content && parsedMsg.type === 'unsupported')) {
       if (isDebug('socket')) console.log(`[Socket:${userName}] 消息类型为 ${parsedMsg.type} 且无内容，拦截显示`);
@@ -148,30 +151,32 @@ class GlobalSocketManager {
     });
   }
 
+  // Fix #6: syncHistory 阈值修正 —— 返回空列表才停止，而非消息数 < 5
   private async syncHistory(userName: string, key: string) {
     try {
       if (isDebug('socket')) console.log(`[SocketManager:${userName}] 正在通过 syncHistory 尝试补全新消息...`);
-      
+
       let hasMore = true;
       let syncCount = 0;
       const MAX_SYNC = 5;
 
       while (hasMore && syncCount < MAX_SYNC) {
-        // 1. 调用补录历史消息接口 (NewSyncHistoryMessage)
         const historyRes: any = await messageApi.syncHistoryMsg(key);
         const historyList = this.extractMsgList(historyRes);
-        
+
         if (historyList.length > 0) {
           if (isDebug('socket')) console.log(`[SocketManager:${userName}] syncHistory 第 ${syncCount + 1} 次同步，补全了 ${historyList.length} 条消息`);
           historyList.forEach((m: any) => this.handleMessage(userName, m));
           syncCount++;
-          if (historyList.length < 5) { 
-            hasMore = false;
-          }
+          // Fix #6: 只有返回空才停止，不用消息数猜测是否还有更多
         } else {
-          if (isDebug('socket')) console.log(`[SocketManager:${userName}] syncHistory 第 ${syncCount + 1} 次未拉取到更多新消息`);
+          if (isDebug('socket')) console.log(`[SocketManager:${userName}] syncHistory 无更多新消息，停止补录`);
           hasMore = false;
         }
+      }
+
+      if (syncCount >= MAX_SYNC) {
+        if (isDebug('socket')) console.log(`[SocketManager:${userName}] syncHistory 已达最大轮次 ${MAX_SYNC}，停止`);
       }
     } catch (e) {
       if (isDebug('socket')) console.warn(`[SocketManager:${userName}] syncHistory 失败:`, e);
@@ -180,13 +185,13 @@ class GlobalSocketManager {
 
   private extractMsgList(data: any): any[] {
     if (!data) return [];
-    
+
     if (Array.isArray(data)) {
       return data;
     }
 
     let list = data.AddMsgs || data.add_msgs || data.List || data.list || data.ModMsgs || data.mod_msgs || data.AddMsgList;
-    
+
     if (!list && data.Data && typeof data.Data === 'object') {
       list = data.Data.AddMsgs || data.Data.List || data.Data.list || data.Data.add_msgs || data.Data.AddMsgList;
     }
@@ -194,7 +199,7 @@ class GlobalSocketManager {
     if (Array.isArray(list)) {
       return list;
     }
-    
+
     return [];
   }
 }
