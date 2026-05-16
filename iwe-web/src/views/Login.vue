@@ -1,6 +1,6 @@
 <template>
   <div class="login-container">
-    <a-tabs default-active-key="connect" type="capsule" justify>
+    <a-tabs default-active-key="connect" type="capsule" justify @change="handleTabChange">
       <a-tab-pane key="connect" title="链接状态">
         <div class="connect-box">
           <a-statistic title="当前链接数量" :value="connectCount" :value-from="0" animation>
@@ -19,7 +19,7 @@
           </div>
         </div>
       </a-tab-pane>
-      <a-tab-pane key="qrcode" title="扫码登录">
+      <a-tab-pane key="qrcode" title="旧版扫码">
         <div class="login-box">
           <div v-if="loading" class="loading">
             <a-spin :size="32" />
@@ -28,7 +28,26 @@
           <div v-else class="qrcode-container">
             <div v-if="qrUrl" class="qr-code">
               <img :src="qrUrl" alt="登录二维码" />
-              <div v-if="expired" class="mask" @click="fetchQrCode">
+              <div v-if="expired" class="mask" @click="fetchQrCode('old')">
+                <icon-refresh :size="30" />
+                <p>已过期，点击刷新</p>
+              </div>
+            </div>
+            <p class="status-msg">{{ statusMsg }}</p>
+          </div>
+        </div>
+      </a-tab-pane>
+
+      <a-tab-pane key="qrcodenew" title="新版扫码">
+        <div class="login-box">
+          <div v-if="loading" class="loading">
+            <a-spin :size="32" />
+            <p>正在获取二维码...</p>
+          </div>
+          <div v-else class="qrcode-container">
+            <div v-if="qrUrl" class="qr-code">
+              <img :src="qrUrl" alt="登录二维码" />
+              <div v-if="expired" class="mask" @click="fetchQrCode('new')">
                 <icon-refresh :size="30" />
                 <p>已过期，点击刷新</p>
               </div>
@@ -146,11 +165,16 @@ const fetchConnectStatus = async () => {
   }
 };
 
-const fetchQrCode = async () => {
+const fetchQrCode = async (type: 'old' | 'new' = 'new') => {
   loading.value = true;
   expired.value = false;
+  qrUrl.value = '';
+  uuid.value = '';
+  stopPolling();
   try {
-    const res: any = await loginApi.getQrCode(props.assignedKey);
+    const res: any = type === 'new' 
+      ? await loginApi.getQrCodeNew(props.assignedKey)
+      : await loginApi.getQrCode(props.assignedKey);
     if (res && res.QrCodeUrl) {
       qrUrl.value = res.QrCodeUrl;
       const match = qrUrl.value.match(/\/x\/([^&?]+)/);
@@ -163,6 +187,14 @@ const fetchQrCode = async () => {
     Message.error('获取失败，请重试');
   } finally {
     loading.value = false;
+  }
+};
+
+const handleTabChange = (key: any) => {
+  if (key === 'qrcode') {
+    fetchQrCode('old');
+  } else if (key === 'qrcodenew') {
+    fetchQrCode('new');
   }
 };
 

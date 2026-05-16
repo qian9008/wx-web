@@ -228,6 +228,28 @@ export const useChatStore = defineStore('chat', {
 
     setConversations(accountUuid: string, conversations: Conversation[]) {
       this.accountConversations[accountUuid] = conversations;
+    },
+
+    // 数据迁移：将旧 ID 下的内存数据迁移到新 ID
+    migrateData(oldUuid: string, newUuid: string) {
+      if (oldUuid === newUuid) return;
+      
+      // 迁移消息
+      if (this.accountMessages[oldUuid]) {
+        this.accountMessages[newUuid] = { 
+          ...this.accountMessages[newUuid], 
+          ...this.accountMessages[oldUuid] 
+        };
+        delete this.accountMessages[oldUuid];
+      }
+      
+      // 迁移会话
+      if (this.accountConversations[oldUuid]) {
+        this.accountConversations[newUuid] = this.accountConversations[oldUuid];
+        delete this.accountConversations[oldUuid];
+      }
+      
+      console.log(`[ChatStore] 数据已从 ${oldUuid} 迁移至 ${newUuid}`);
     }
   }
 });

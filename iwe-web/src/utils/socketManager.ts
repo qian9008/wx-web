@@ -51,37 +51,22 @@ class GlobalSocketManager {
     
     // 初始化同步 (不再阻塞主流程，采用并行静默同步策略)
     this.syncHistory(uuid, key, uuid);
-    this.syncRedisMsg(uuid, key, uuid);
+    // this.syncRedisMsg(uuid, key, uuid); // 暂时注释掉 Redis 同步以排除干扰
 
     // 开启低频 HTTP 轮询补位
     this.startPolling(uuid, key, uuid);
   }
 
   private async syncRedisMsg(uuid: string, key: string, currentWxid: string) {
+    /*
     try {
       if (isDebug('socket')) console.log(`[SocketManager:${uuid}] 正在同步 Redis 极速快照...`);
       const res: any = await messageApi.getRedisSyncMsg(key);
-      
-      // 特殊处理：如果是字符串，尝试解析 JSON (Redis返回的可能是 JSON 字符串)
-      let dataToExtract = res;
-      if (typeof res === 'string') {
-        try {
-          dataToExtract = JSON.parse(res);
-        } catch (e) {
-          // ignore
-        }
-      }
-      
-      const msgList = this.extractMsgList(dataToExtract);
-      if (msgList.length > 0) {
-        if (isDebug('socket')) console.log(`[SocketManager:${uuid}] 从 Redis 恢复了 ${msgList.length} 条最近消息`);
-        msgList.forEach((m: any) => this.handleMessage(uuid, m, currentWxid));
-      } else {
-        if (isDebug('socket')) console.log(`[SocketManager:${uuid}] Redis 中没有最近消息记录`);
-      }
+      ...
     } catch (e) {
       if (isDebug('socket')) console.warn(`[SocketManager:${uuid}] Redis 快照同步跳过或失败:`, e);
     }
+    */
   }
 
   private startPolling(uuid: string, key: string, currentWxid: string) {

@@ -150,6 +150,7 @@
             class="conv-item"
             :class="{ active: chatStore.activeId === getContactId(contact) }"
             @click="handleSelectContact(contact)"
+            v-lazy-contact="getContactId(contact)"
           >
             <a-avatar :size="42" shape="square" :style="{ backgroundColor: '#337ecc' }">
               <img v-if="getContactAvatar(contact)" :src="getContactAvatar(contact)" />
@@ -337,6 +338,14 @@
               <a-divider>分表管理</a-divider>
               
               <div class="store-grid">
+                <div class="store-item">
+                  <div class="store-info">
+                    <span class="name">通讯录同步</span>
+                    <span class="count">{{ Object.keys(accountStore.contactMap).length }} 个联系人</span>
+                  </div>
+                  <a-button type="primary" size="mini" @click="handleManualSyncContacts">手动同步</a-button>
+                </div>
+
                 <div class="store-item">
                    <div class="store-info">
                      <span class="name">本地头像数据 (avatars)</span>
@@ -608,6 +617,25 @@ const handleLoginSuccess = () => {
   loginVisible.value = false;
   accountStore.syncAccountsFromServer();
 };
+
+const handleManualSyncContacts = async () => {
+  const uuid = accountStore.activeAccountUuid;
+  const acc = accountStore.accounts.find(a => a.uuid === uuid);
+  if (!acc || !uuid) return Message.warning('请先选择活跃账号');
+  
+  try {
+    contactLoading.value = true;
+    Message.info('开始手动同步通讯录...');
+    // 强制同步
+    await accountStore.syncFullContactList(uuid, acc.sessionKey, true);
+    Message.success('通讯录同步请求已发送，请观察控制台补全进度');
+  } catch (err: any) {
+    Message.error('同步失败: ' + err.message);
+  } finally {
+    contactLoading.value = false;
+  }
+};
+
 const activeTab = ref('chat');
 const contactLoading = ref(false);
 const msgFlow = ref<HTMLElement | null>(null);
@@ -635,15 +663,15 @@ const sortedContacts = computed(() => {
 
   all.forEach(c => {
     const id = getContactId(c);
+    if (!id) return;
+
     if (id.endsWith('@chatroom')) {
       categories.room.push(c);
-    } else if (id.startsWith('gh_') || id === 'fmessage' || id === 'medianote') {
+    } else if (id.startsWith('gh_') || id === 'fmessage' || id === 'medianote' || id.includes('@official') || id.includes('@app')) {
       categories.official.push(c);
     } else {
-      // 排除一些系统 ID 或者无效 ID
-      if (id && !id.includes('@')) {
-        categories.friend.push(c);
-      }
+      // 只要不是明确的群组或特殊系统账号，都默认归入好友/联系人
+      categories.friend.push(c);
     }
   });
 
@@ -751,13 +779,7 @@ const handleSwitchContact = async () => {
   console.log('[Home] 切换到联系人页');
   activeTab.value = 'contact';
   
-  const accountUuid = accountStore.activeAccountUuid;
-  const acc = accountStore.accounts.find(a => a.uuid === accountUuid || a.sessionKey === accountUuid);
-  
-  // 如果账号不在线（没有 uuid），只切换 Tab 但不加载联系人数据，依靠 UI 引导登录
-  if (acc && acc.uuid) {
-    await accountStore.syncFullContactList(accountUuid, acc.sessionKey);
-  }
+  // 移除：切换 Tab 时不再自动触发同步，仅依赖本地缓存和手动同步
 };
 
 const handleSendMessage = async () => {
@@ -897,6 +919,30 @@ watch(adminVisible, (v) => {
     loadCacheStats();
   }
 });
+
+// --- 懒加载指令实现 ---
+const lazyObserver = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      const wxid = entry.target.getAttribute('data-wxid');
+      if (wxid) {
+        accountStore.enqueueContactDetails(wxid);
+        // 触发后停止监听该元素
+        lazyObserver.unobserve(entry.target);
+      }
+    }
+  });
+}, { rootMargin: '100px' }); // 提前 100px 开始加载
+
+const vLazyContact = {
+  mounted: (el: HTMLElement, binding: any) => {
+    el.setAttribute('data-wxid', binding.value);
+    lazyObserver.observe(el);
+  },
+  unmounted: (el: HTMLElement) => {
+    lazyObserver.unobserve(el);
+  }
+};
 
 onMounted(async () => {
   document.body.setAttribute('arco-theme', 'dark');

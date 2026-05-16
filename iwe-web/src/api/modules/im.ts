@@ -2,6 +2,8 @@ import request from '@/utils/request';
 
 export const loginApi = {
   getQrCode: (key?: string) => request.post(`/login/GetLoginQrCodeNewX${key ? `?key=${key}` : ''}`, {}),
+  // 新扫码登录接口
+  getQrCodeNew: (key?: string) => request.post(`/login/GetLoginQrCodeNew${key ? `?key=${key}` : ''}`, {}),
   checkLogin: (uuid: string, key?: string) => request.get(`/login/CheckLoginStatus?uuid=${uuid}${key ? `&key=${key}` : ''}`),
   getOnlineAccounts: () => request.get('/equipment/GetOnlineInfo'),
   
@@ -22,6 +24,9 @@ export const loginApi = {
 
   // 获取验证码 (绑定手机)
   getVerifyCode: (license: string, mobile: string) => request.post(`/login/WxBindOpMobileForReg?key=${license}`, { Mobile: mobile }),
+
+  // 获取个人资料信息
+  getProfile: (license: string) => request.get(`/user/GetProfile?key=${license}`),
 
   // 获取链接数量
   getIWXConnect: () => request.get('/login/GetIWXConnect'),
