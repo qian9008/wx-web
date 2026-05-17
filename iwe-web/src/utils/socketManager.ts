@@ -50,8 +50,8 @@ class GlobalSocketManager {
     service.connect(key);
     this.connections.set(realWxid, service);
 
-    // 初始化历史同步 (由于接口不存在，暂时注释)
-    // this.syncHistory(realWxid, key);
+    // 初始化历史同步
+    this.syncHistory(realWxid, key);
 
     // 开启低频 HTTP 轮询补位（WS 正常时自动跳过）
     this.startPolling(realWxid, key);
@@ -158,7 +158,6 @@ class GlobalSocketManager {
 
   // Fix #6: syncHistory 阈值修正 —— 返回空列表才停止，而非消息数 < 5
   private async syncHistory(userName: string, key: string) {
-    /* 由于接口不存在，暂时注释掉同步逻辑
     try {
       if (isDebug('socket')) console.log(`[SocketManager:${userName}] 正在通过 syncHistory 尝试补全新消息...`);
 
@@ -187,7 +186,6 @@ class GlobalSocketManager {
     } catch (e) {
       if (isDebug('socket')) console.warn(`[SocketManager:${userName}] syncHistory 失败:`, e);
     }
-    */
   }
 
   private extractMsgList(data: any): any[] {

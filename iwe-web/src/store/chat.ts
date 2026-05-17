@@ -80,7 +80,7 @@ export const useChatStore = defineStore('chat', {
     get msgIdSet(): BoundedSet { return (this as any)._msgIdDedup; },
   }),
   actions: {
-    async addParsedMessage(userName: string, msg: AppMessage) {
+    async addParsedMessage(userName: string, msg: AppMessage, isHistorical = false) {
       if (this._msgIdDedup.has(String(msg.id))) {
         if (isDebug('socket')) console.log(`[ChatStore] 消息 ID ${msg.id} 已在去重集合中`);
         return;
@@ -104,9 +104,12 @@ export const useChatStore = defineStore('chat', {
         return;
       }
 
-      // 1. 持久化消息到 DB
-      const msgWithPartner = { ...msg, partnerId };
-      await contactCache.saveMessage(userName, msgWithPartner);
+      // 1. 持久化消息到 DB（Redis 极速模式下跳过 IndexedDB 写入）
+      const accountStore = useAccountStore();
+      if (!accountStore.isRedisMode(userName)) {
+        const msgWithPartner = { ...msg, partnerId };
+        await contactCache.saveMessage(userName, msgWithPartner);
+      }
 
       // 2. 更新内存 Store（Fix #2: 二分插入 + Fix #8: 删除冗余的内存层 find 去重）
       if (!this.accountMessages[userName]) {
@@ -124,13 +127,13 @@ export const useChatStore = defineStore('chat', {
 
       // 3. 更新会话列表镜像 (upsert)
       try {
-        await this.updateConversation(userName, partnerId, msg);
+        await this.updateConversation(userName, partnerId, msg, isHistorical);
       } catch (err) {
         console.error(`[ChatStore] updateConversation 异常:`, err);
       }
     },
 
-    async updateConversation(userName: string, wxid: string, msg: any) {
+    async updateConversation(userName: string, wxid: string, msg: any, isHistorical = false) {
       if (!this.accountConversations[userName]) {
         this.accountConversations = { ...this.accountConversations, [userName]: [] };
       }
@@ -156,7 +159,7 @@ export const useChatStore = defineStore('chat', {
           avatar: avatarUrl,
           lastMsg: msg.content,
           time: msg.time,
-          unread: msg.isSelf ? 0 : 1
+          unread: (msg.isSelf || isHistorical) ? 0 : 1
         };
         list.unshift(conv); // 新会话直接置顶
         
@@ -173,7 +176,7 @@ export const useChatStore = defineStore('chat', {
         conv = { ...list[existingIdx] };
         conv.lastMsg = msg.content;
         conv.time = msg.time;
-        if (!msg.isSelf && wxid !== this.activeId) {
+        if (!msg.isSelf && wxid !== this.activeId && !isHistorical) {
           conv.unread = (conv.unread || 0) + 1;
         }
         // 从原位置移除，插入头部（置顶）
@@ -183,12 +186,19 @@ export const useChatStore = defineStore('chat', {
 
       this.accountConversations[userName] = list;
 
-      // 持久化会话到 DB (强制克隆为纯对象，避免 DataCloneError)
-      await contactCache.saveConversation(userName, JSON.parse(JSON.stringify(conv)));
+      // 持久化会话到 DB（Redis 极速模式下跳过 IndexedDB 写入）
+      const accountStore = useAccountStore();
+      if (!accountStore.isRedisMode(userName)) {
+        await contactCache.saveConversation(userName, JSON.parse(JSON.stringify(conv)));
+      }
     },
 
     async loadHistory(userName: string, partnerId: string) {
       if (!userName || !partnerId) return;
+
+      // Redis 极速模式下不从 IndexedDB 加载历史（所有数据已在内存中）
+      const accountStore = useAccountStore();
+      if (accountStore.isRedisMode(userName)) return;
 
       // 🚀 优化：如果内存中已缓存了该联系人的消息，直接跳过 IndexedDB 历史加载
       if (this.accountMessages[userName]?.[partnerId] && this.accountMessages[userName][partnerId].length > 0) {
@@ -225,6 +235,10 @@ export const useChatStore = defineStore('chat', {
 
     async loadConversations(userName: string) {
       if (!userName) return;
+
+      // Redis 极速模式下跳过 IndexedDB 加载（所有会话已在内存中）
+      const accountStoreRef = useAccountStore();
+      if (accountStoreRef.isRedisMode(userName)) return;
 
       // 🚀 优化：如果内存中已有当前账号的会话列表，直接使用，跳过 IndexedDB 读取
       if (this.accountConversations[userName] && this.accountConversations[userName].length > 0) {
@@ -401,7 +415,11 @@ export const useChatStore = defineStore('chat', {
       if (idx > -1) {
         list[idx] = { ...list[idx], unread: 0 };
         this.accountConversations[userName] = list;
-        await contactCache.saveConversation(userName, JSON.parse(JSON.stringify(list[idx])));
+        // Redis 极速模式下跳过 IndexedDB 持久化
+        const accountStore = useAccountStore();
+        if (!accountStore.isRedisMode(userName)) {
+          await contactCache.saveConversation(userName, JSON.parse(JSON.stringify(list[idx])));
+        }
       }
     }
   }

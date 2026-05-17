@@ -572,6 +572,19 @@
                   @update:model-value="(val: any) => accountStore.updateAvatarConfig({ cacheEnabled: val }, true)" 
                 />
               </a-form-item>
+              <a-form-item label="默认 Redis 极速模式" help="开启后所有新账号默认使用 Redis 同步，跳过 IndexedDB">
+                <a-switch 
+                  :model-value="accountStore.globalAvatarConfig.isRedisLanMode" 
+                  @update:model-value="(val: any) => accountStore.updateAvatarConfig({ isRedisLanMode: val }, true)" 
+                />
+              </a-form-item>
+              <a-form-item label="默认新 Redis 地址 (可选)" help="额外配置新 Redis 读写服务，默认启动回写联系人与读回功能">
+                <a-input 
+                  :model-value="accountStore.globalAvatarConfig.redisWriteBackUrl" 
+                  @update:model-value="(val: any) => accountStore.updateAvatarConfig({ redisWriteBackUrl: val }, true)" 
+                  placeholder="例如: http://192.168.50.99:7377/other/SaveContactToRedis?key="
+                />
+              </a-form-item>
             </a-form>
           </a-tab-pane>
 
@@ -594,6 +607,39 @@
                   :model-value="accountStore.getEffectiveAvatarConfig().cacheEnabled" 
                   @update:model-value="(val: any) => accountStore.updateAvatarConfig({ cacheEnabled: val })" 
                 />
+              </a-form-item>
+              <a-divider>数据通道</a-divider>
+              <a-form-item label="局域网 Redis 极速模式" help="开启后从原只读 Redis 快照极速获取数据，跳过 IndexedDB。如果配置了新 Redis 地址，则同步启用回写与读回机制。">
+                <a-switch 
+                  :model-value="accountStore.getEffectiveAvatarConfig().isRedisLanMode" 
+                  @update:model-value="(val: any) => accountStore.updateAvatarConfig({ isRedisLanMode: val })" 
+                />
+              </a-form-item>
+              <a-form-item 
+                v-if="accountStore.getEffectiveAvatarConfig().isRedisLanMode"
+                label="新 Redis 地址 (可选)" 
+                help="配置在不同服务器的新 Redis 接口，用于自动补写并读回联系人"
+              >
+                <a-input 
+                  :model-value="accountStore.getEffectiveAvatarConfig().redisWriteBackUrl" 
+                  @update:model-value="(val: any) => accountStore.updateAvatarConfig({ redisWriteBackUrl: val })" 
+                  placeholder="例如: http://192.168.50.99:7377/other/SaveContactToRedis?key="
+                />
+              </a-form-item>
+              <a-form-item 
+                v-if="accountStore.getEffectiveAvatarConfig().isRedisLanMode"
+                label="回写操作" 
+                help="手动将当前账号的所有联系人一次性批量补写保存到新 Redis 服务器"
+              >
+                <a-button 
+                  type="outline" 
+                  size="small" 
+                  status="success" 
+                  @click="handleSaveAllContactsToRedis"
+                  :loading="saveAllContactsLoading"
+                >
+                  批量补写所有联系人到新 Redis
+                </a-button>
               </a-form-item>
               <a-divider>数据获取</a-divider>
               <a-form-item label="好友列表" help="调用 /friend/GetFriendList 获取最新好友列表">
@@ -833,8 +879,24 @@ const handleManualSyncContacts = async () => {
 const activeTab = ref('chat');
 const contactLoading = ref(false);
 const friendListLoading = ref(false);
+const saveAllContactsLoading = ref(false);
 const extract62Loading = ref(false);
 const extracted62Data = ref('');
+
+const handleSaveAllContactsToRedis = async () => {
+  const uuid = accountStore.activeAccountUuid;
+  if (!uuid) return Message.warning('请先选择活跃账号');
+  try {
+    saveAllContactsLoading.value = true;
+    Message.info('开始批量回写所有联系人到 Redis...');
+    await accountStore.saveAllContactsToRedis(uuid);
+    Message.success('批量回写成功！');
+  } catch (err: any) {
+    Message.error('回写失败: ' + err.message);
+  } finally {
+    saveAllContactsLoading.value = false;
+  }
+};
 
 const handleExtract62DataForCurrent = async () => {
   const uuid = accountStore.activeAccountUuid;
@@ -990,11 +1052,15 @@ const slicedOfficials = computed(() => {
   return sortedContacts.value.official.slice(0, visibleOfficialLimit.value);
 });
 
-// 重置分页限制，切换页签或账号时恢复初始展示数量并清空可见头像集合
+// 重置分页限制，切换页签或账号时恢复初始展示数量
 watch([() => activeTab.value, () => contactCategory.value, () => accountStore.activeAccountUuid], () => {
   visibleFriendLimit.value = 100;
   visibleRoomLimit.value = 100;
   visibleOfficialLimit.value = 100;
+});
+
+// 切换账号时清空可见头像集合，重新懒加载新账号的联系人头像
+watch(() => accountStore.activeAccountUuid, () => {
   Object.keys(visibleAvatars).forEach(key => delete visibleAvatars[key]);
 });
 
@@ -1333,8 +1399,13 @@ const lazyObserver = new IntersectionObserver((entries) => {
 
 const vLazyContact = {
   mounted: (el: HTMLElement, binding: any) => {
-    el.setAttribute('data-wxid', binding.value);
-    lazyObserver.observe(el);
+    const wxid = binding.value;
+    if (wxid) {
+      el.setAttribute('data-wxid', wxid);
+      // 🚀 优化：如果该联系人之前已加载过，且其头像状态仍为可见，则无需重复注册监听器，直接挂载渲染即可
+      if (visibleAvatars[wxid]) return;
+      lazyObserver.observe(el);
+    }
   },
   unmounted: (el: HTMLElement) => {
     lazyObserver.unobserve(el);

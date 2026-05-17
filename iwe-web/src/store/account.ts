@@ -23,6 +23,7 @@ interface DebugConfig {
 interface AvatarConfig {
   downloadEnabled: boolean;
   cacheEnabled: boolean;
+  isRedisLanMode: boolean; // 局域网 Redis 极速模式：跳过 IndexedDB，从 Redis 快照直接填充内存
 }
 
 export const useAccountStore = defineStore('account', {
@@ -50,10 +51,11 @@ export const useAccountStore = defineStore('account', {
         const config = JSON.parse(localStorage.getItem('avatar_config') || '{}');
         return {
           downloadEnabled: config.downloadEnabled !== false,
-          cacheEnabled: config.cacheEnabled !== false
+          cacheEnabled: config.cacheEnabled !== false,
+          isRedisLanMode: config.isRedisLanMode !== false
         };
       } catch (e) {
-        return { downloadEnabled: true, cacheEnabled: true };
+        return { downloadEnabled: true, cacheEnabled: true, isRedisLanMode: true };
       }
     })() as AvatarConfig,
     // 账号独立配置：uuid -> AvatarConfig
@@ -132,10 +134,164 @@ export const useAccountStore = defineStore('account', {
 
     getEffectiveAvatarConfig(uuid?: string): AvatarConfig {
       const targetUuid = uuid || this.activeAccountUuid;
+      const globalConf = this.globalAvatarConfig;
       if (targetUuid && this.accountConfigs[targetUuid]) {
-        return this.accountConfigs[targetUuid];
+        const config = this.accountConfigs[targetUuid];
+        return {
+          downloadEnabled: config.downloadEnabled !== false,
+          cacheEnabled: config.cacheEnabled !== false,
+          isRedisLanMode: config.isRedisLanMode !== undefined ? !!config.isRedisLanMode : globalConf.isRedisLanMode
+        };
       }
-      return this.globalAvatarConfig;
+      return globalConf;
+    },
+
+    /**
+     * 判断指定账号是否启用了局域网 Redis 极速模式
+     * 优先级：账号独立配置 > 全局默认配置 > false
+     */
+    isRedisMode(uuid?: string): boolean {
+      const config = this.getEffectiveAvatarConfig(uuid);
+      return !!config.isRedisLanMode;
+    },
+
+    /**
+     * 从 Redis 快照的 ModContacts 数组一次性填充内存联系人 Map
+     * 替代传统的分页 GetContactList + 队列式 GetContactDetailsList
+     */
+    fillContactsFromRedis(accountUuid: string, modContacts: any[]) {
+      if (!modContacts || !Array.isArray(modContacts)) return;
+      const map: Record<string, any> = this.accountContactMaps[accountUuid] || {};
+      let count = 0;
+      modContacts.forEach(c => {
+        const wxid = c.userName?.str || c.UserName?.str || c.wxid || c.userName || c.UserName;
+        if (wxid) {
+          map[wxid] = c;
+          count++;
+        }
+      });
+      this.accountContactMaps[accountUuid] = map;
+      console.log(`[AccountStore:Redis] 从 Redis 快照填充了 ${count} 个联系人 (账号: ${accountUuid})`);
+    },
+
+    /**
+     * Redis 极速模式的冷启动同步入口
+     * 双引擎并行联动逻辑：
+     * 1. 阶段 A (原 Redis 只读快照)：使用全局基准 IP (this.baseUrl) 调 /other/GetRedisSyncMsg 快速填充最近消息与好友底模
+     * 2. 阶段 B (新 Redis 读回补写联系人)：如果配置了新 Redis 地址，则利用该独占 IP 读回增量补写联系人覆盖内存
+     */
+        console.log(`[AccountStore:Redis] 开始 Redis 极速同步 (账号: ${uuid})`);
+        const res: any = await messageApi.getRedisSyncMsg(key);
+        console.log(`[AccountStore:Redis] 请求原 Redis 同步接口 (URL: ${originalUrl})`);
+        const res: any = await request.post(originalUrl, {});
+        const data = res?.Data || res;
+
+        // 1. 填充联系人（ModContacts）
+        const modContacts = data?.ModContacts || [];
+        if (modContacts.length > 0) {
+          this.fillContactsFromRedis(uuid, modContacts);
+        }
+
+        // 2. 填充自身信息（ModUserInfos）
+        const modUserInfos = data?.ModUserInfos || [];
+        if (modUserInfos.length > 0) {
+          const selfInfo = modUserInfos[0];
+          const selfWxid = selfInfo.userName?.str || selfInfo.UserName?.str || selfInfo.userName || selfInfo.UserName;
+          if (selfWxid) {
+            this.fillContactsFromRedis(uuid, [selfInfo]);
+          }
+        }
+
+        // 3. 填充消息（AddMsgs）
+        const addMsgs = data?.AddMsgs || [];
+        if (addMsgs.length > 0) {
+          const { MessageParser } = await import('@/utils/parser');
+          const chatStore = useChatStore();
+          let processedCount = 0;
+          for (const rawMsg of addMsgs) {
+            const parsed = MessageParser.parse(rawMsg, uuid);
+            // 跳过状态通知等非显示类消息
+            if (parsed.type === 'status_notify' || (!parsed.content && parsed.type === 'unsupported')) continue;
+            await chatStore.addParsedMessage(uuid, parsed, true);
+            processedCount++;
+          }
+          console.log(`[AccountStore:Redis] 从原 Redis 快照处理了 ${processedCount}/${addMsgs.length} 条消息`);
+        }
+        console.log(`[AccountStore:Redis] 原 Redis 同步完成 (联系人: ${modContacts.length}, 消息: ${addMsgs.length})`);
+      } catch (err) {
+        console.warn('[AccountStore:Redis] 原 Redis 只读快照同步失败，继续尝试新 Redis 读回:', err);
+      }
+
+      // --- 阶段 B：新 Redis 读回补写联系人（自动启动，在不同服务器） ---
+      const config = this.getEffectiveAvatarConfig(uuid);
+      if (config.redisWriteBackUrl) {
+        let readUrl = config.redisWriteBackUrl;
+        if (!readUrl.includes('?key=')) {
+          readUrl = `${readUrl}?key=${key}`;
+        } else if (readUrl.endsWith('?key=')) {
+          readUrl = `${readUrl}${key}`;
+        }
+
+        console.log(`[AccountStore:Redis] 自动从新 Redis 读回补写联系人 (URL: ${readUrl})`);
+        try {
+          let newRes: any = null;
+          let methodUsed = 'GET';
+          try {
+            // 先尝试用 GET 请求读回联系人（标准的 RESTful 读取方式，安全且不会有覆盖副作用）
+            newRes = await request.get(readUrl);
+            console.log('[AccountStore:Redis] 从新 Redis 读回原始响应 (GET):', newRes);
+          } catch (getErr) {
+            console.warn('[AccountStore:Redis] 新 Redis GET 请求失败，将尝试 POST:', getErr);
+          }
+
+          // 如果 GET 没有读到任何数据（或者报错了），尝试用 POST 空 Body {} 读回
+          if (!newRes || (Array.isArray(newRes) && newRes.length === 0) || (typeof newRes === 'object' && Object.keys(newRes).length === 0)) {
+            methodUsed = 'POST';
+            newRes = await request.post(readUrl, {});
+            console.log('[AccountStore:Redis] 从新 Redis 读回原始响应 (POST):', newRes);
+          }
+
+          // 兼容 JSON 字符串格式
+          if (typeof newRes === 'string') {
+            try {
+              newRes = JSON.parse(newRes);
+            } catch (e) {}
+          }
+
+          let newContacts: any[] = [];
+          if (Array.isArray(newRes)) {
+            newContacts = newRes;
+          } else if (newRes && typeof newRes === 'object') {
+            // 尝试从各种可能的外壳或属性中安全地抓取数组
+            const dataContent = newRes.Data !== undefined ? newRes.Data : (newRes.data !== undefined ? newRes.data : newRes);
+            if (Array.isArray(dataContent)) {
+              newContacts = dataContent;
+            } else if (dataContent && typeof dataContent === 'object') {
+              const list = dataContent.ModContacts || dataContent.modContacts || dataContent.contacts || dataContent.List || dataContent.list;
+              if (Array.isArray(list)) {
+                newContacts = list;
+              } else {
+                // 终极遍历兜底：寻找该对象下的任意 Array 子属性作为联系人源
+                for (const k of Object.keys(dataContent)) {
+                  if (Array.isArray(dataContent[k])) {
+                    newContacts = dataContent[k];
+                    break;
+                  }
+                }
+              }
+            }
+          }
+
+          if (newContacts.length > 0) {
+            this.fillContactsFromRedis(uuid, newContacts);
+            console.log(`[AccountStore:Redis] 成功从新 Redis 读回并填充了 ${newContacts.length} 个补写联系人 (使用方法: ${methodUsed})`);
+          } else {
+            console.log(`[AccountStore:Redis] 从新 Redis 读回了 0 个补写联系人 (使用方法: ${methodUsed})，原始响应详情:`, JSON.stringify(newRes));
+          }
+        } catch (newErr) {
+          console.error('[AccountStore:Redis] 从新 Redis 读回补写联系人失败:', newErr);
+        }
+      }
     },
 
     async syncAccountsFromServer() {
@@ -191,11 +347,22 @@ export const useAccountStore = defineStore('account', {
             if (targetAcc.sessionKey) {
               const isOnline = await this.checkSingleAccountStatus(targetAcc.sessionKey);
               if (isOnline) {
-                // 直接注册 Socket，因为 uuid 已是最终确定的 ID
+              if (this.isRedisMode(acc.uuid)) {
+                this.syncViaRedis(acc.uuid, acc.sessionKey);
+              } else {
+                this.loadContactsFromCache(acc.uuid);
+                this.syncFullContactList(acc.uuid, acc.sessionKey);
+              }
                 socketManager.registerAccount(targetAcc.uuid, targetAcc.sessionKey);
-                // 加载缓存数据
-                this.loadContactsFromCache(targetAcc.uuid);
-                this.syncFullContactList(targetAcc.uuid, targetAcc.sessionKey);
+                // 根据模式选择数据加载策略
+                if (this.isRedisMode(targetAcc.uuid)) {
+                  // 🚀 Redis 极速模式：跳过 IndexedDB，直接从 Redis 快照填充
+                  await this.syncViaRedis(targetAcc.uuid, targetAcc.sessionKey);
+                } else {
+                  // 常规模式：从 IndexedDB 加载缓存 + 分页 API 补全
+                  this.loadContactsFromCache(targetAcc.uuid);
+                  this.syncFullContactList(targetAcc.uuid, targetAcc.sessionKey);
+                }
               } else {
                 console.log(`[AccountStore] 账号 ${targetAcc.uuid} 离线，跳过数据同步`);
               }
@@ -257,8 +424,7 @@ export const useAccountStore = defineStore('account', {
             if (wasOffline && isOnline && acc.uuid && acc.uuid !== license) {
               console.log(`[AccountStore] 发现账号 ${acc.uuid} 恢复在线，自动恢复数据同步`);
               socketManager.registerAccount(acc.uuid, acc.sessionKey);
-              this.loadContactsFromCache(acc.uuid);
-              this.syncFullContactList(acc.uuid, acc.sessionKey);
+              // 注意：这里不再自动触发全量同步，由外部调用方根据需要决定
             }
           }
           return isOnline;
@@ -302,14 +468,6 @@ export const useAccountStore = defineStore('account', {
           if (accIndex > -1) {
             const oldUuid = this.accounts[accIndex].uuid;
             if (oldUuid === realWxid) {
-              console.log(`[AccountStore] 账号 ID 已是最新，确保 Socket 注册正确 (${realWxid})`);
-              // ID 已正确，但 Socket 可能尚未注册（首次启动时跳过了预注册）
-              if (isOnline) {
-                socketManager.registerAccount(realWxid, license);
-              } else {
-                socketManager.stopAccount(realWxid);
-                console.log(`[AccountStore] 账号 ${realWxid} 离线，跳过数据同步`);
-              }
               return;
             }
 
@@ -332,7 +490,7 @@ export const useAccountStore = defineStore('account', {
             
             // 4. 更新 Store 中的账号信息
             this.accounts[accIndex].uuid = realWxid;
-            this.accounts[accIndex].nickname = realNick || this.accounts[accIndex].nickname;
+    async updateContact(wxid: string, detail: any, accountUuid?: string) {
             // 直接用本地缓存的 blob URL，避免防盗链导致原始 URL 无法渲染
             const rawAvatar = realAvatar || this.accounts[accIndex].avatar;
             if (rawAvatar) {
@@ -346,29 +504,9 @@ export const useAccountStore = defineStore('account', {
             // 5. 重启 Socket 关联
             if (oldUuid) {
               socketManager.stopAccount(oldUuid);
-            }
-            if (isOnline) {
-              // 这里 registerAccount 内部会自己处理 wxid 查找，但我们已经知道 realWxid 了
-              socketManager.registerAccount(realWxid, license);
-              
-              // 6. 重新加载新 ID 的缓存
-              await this.loadContactsFromCache(realWxid);
-              
-              // 7. 触发新 ID 的全量同步判定
-              this.syncFullContactList(realWxid, license);
-            } else {
-              console.log(`[AccountStore] 账号 ${realWxid} 离线，跳过数据同步`);
-            }
-          }
         }
-      } catch (e) {
-        console.warn('[AccountStore] 资料补全失败:', e);
+        return;
       }
-    },
-
-    async loadContactsFromCache(accountUuid?: string) {
-      const targetUuid = accountUuid || this.activeAccountUuid;
-      if (!targetUuid) return;
       
       // 🚀 优化：如果内存已存在该账号的联系人，不再重复读取 IndexedDB
       if (this.accountContactMaps[targetUuid] && Object.keys(this.accountContactMaps[targetUuid]).length > 0) {
@@ -392,7 +530,7 @@ export const useAccountStore = defineStore('account', {
       console.log(`[AccountStore] 从 DB 加载了 ${Object.keys(map).length} 个联系人 (账号: ${targetUuid})`);
     },
 
-    async updateContact(wxid: string, detail: any, accountUuid?: string) {
+    async updateContact(wxid: string, detail: any, accountUuid?: string, triggerAutoFetch = true) {
       if (!wxid) return;
       const targetUuid = accountUuid || this.activeAccountUuid;
       if (!targetUuid) return;
@@ -406,8 +544,43 @@ export const useAccountStore = defineStore('account', {
         ...detail,
         isPlaceholder: false // 清除占位标记
       };
+
+      // 🚀 Redis 极速模式下，自动触发单个更新联系人回写到 Redis，持久化取代 IndexedDB
+      if (this.isRedisMode(targetUuid)) {
+        this.saveSingleContactToRedis(targetUuid, wxid);
+      } else {
+        // 常规模式：写入 IndexedDB 缓存
+        contactCache.set(targetUuid, {
+          wxid,
+          ...this.accountContactMaps[targetUuid][wxid]
+        });
+      }
+
+      // 如果是群聊，且开启了自动解析
+      const isChatRoom = wxid.endsWith('@chatroom');
+      if (isChatRoom && triggerAutoFetch) {
+        // 提取群成员列表
+        const memberList = detail.chatRoomMembers || detail.memberList || detail.MemberList || [];
+        if (memberList.length > 0) {
+          const memberWxids = memberList.map((m: any) => 
+            typeof m === 'string' ? m : (m.userName?.str || m.UserName?.str || m.userName || m.UserName || m.wxid)
+          ).filter(Boolean);
+          
+          if (memberWxids.length > 0) {
+            console.log(`[AccountStore] 发现群 ${wxid} 成员列表 (${memberWxids.length}人)，加入静默占位...`);
+            memberWxids.forEach((mId: string) => {
+              if (!this.accountContactMaps[targetUuid][mId]) {
+                this.accountContactMaps[targetUuid][mId] = { wxid: mId, isPlaceholder: true };
+              }
+            });
+          }
+        }
+      }
       
-      await contactCache.set(wxid, detail, targetUuid);
+      // Redis 极速模式下跳过 IndexedDB 写入，仅更新内存镜像
+      if (!this.isRedisMode(targetUuid)) {
+        await contactCache.set(wxid, detail, targetUuid);
+      }
 
       // 反向同步：更新会话列表中的昵称和头像
       const chatStore = useChatStore();
@@ -445,6 +618,14 @@ export const useAccountStore = defineStore('account', {
       
       this.syncLockMap[uuid] = true;
       try {
+        // 🚀 Redis 极速模式：直接走 Redis 快照同步，跳过所有传统分页逻辑
+        if (this.isRedisMode(uuid)) {
+          console.log(`[AccountStore] 账号 ${uuid} 已启用 Redis 极速模式，走 Redis 同步路径`);
+          await this.syncViaRedis(uuid, key);
+          this.syncLockMap[uuid] = false;
+          return;
+        }
+
         console.log(`[AccountStore] 开始全量同步检查 (账号: ${uuid}, 强制: ${force})`);
 
         // 核心优化：先检查本地数据库是否有联系人
@@ -460,10 +641,11 @@ export const useAccountStore = defineStore('account', {
 
         console.log(`[AccountStore] 本地无联系人或强制同步，开始调用接口获取 (账号: ${uuid})`);
 
-        // 第一阶段：GetFriendList (获取好友总数并同步第一批)
+            // 优化：每获取一页(50个)，就立刻触发一次详情补全，提高感知速度
         let apiTotalCount = 0;
-        try {
-          const friendRes: any = await messageApi.getFriendList(key);
+              const batch = newWxids.splice(0, newWxids.length);
+              console.log(`[AccountStore] 达到 50 个步长，先行补全批次详情...`);
+              this.enqueueContactDetails(batch, uuid);
           const friendData = friendRes.Data || friendRes;
           apiTotalCount = friendData.count || friendData.Count || 0;
           const friendList = friendData.friendList || [];
@@ -472,8 +654,13 @@ export const useAccountStore = defineStore('account', {
             console.log(`[AccountStore] GetFriendList 成功拉取 ${friendList.length} 个好友详情 (API 总数: ${apiTotalCount})`);
             for (const f of friendList) {
               const wxid = f.userName?.str || f.UserName?.str || f.wxid || f.userName || f.UserName;
-              if (wxid) {
-                await this.updateContact(wxid, f, uuid);
+
+        // 自动触发详情补全
+        if (newWxids.length > 0) {
+          console.log(`[AccountStore] 分页发现 ${newWxids.length} 个联系人需补全详情 (账号: ${uuid})`);
+          this.enqueueContactDetails(newWxids, uuid);
+        }
+
               }
             }
           }
@@ -487,14 +674,6 @@ export const useAccountStore = defineStore('account', {
         let hasMore = true;
         let newWxids: string[] = [];
         let safetyCounter = 0;
-
-        while (hasMore && safetyCounter < 100) {
-          safetyCounter++;
-          const res: any = await messageApi.getContactList(key, currentContactSeq, currentChatRoomSeq);
-          const data = res.Data || res;
-          
-          // 根据最新解读，数据位于 Data.ContactList
-          const contactListData = data.ContactList || data.contactList || data;
           
           // 1. 提取 ID 列表
           const userList = contactListData.contactUsernameList || contactListData.UsernameList || 
@@ -532,11 +711,10 @@ export const useAccountStore = defineStore('account', {
             currentContactSeq = nextContactSeq;
             currentChatRoomSeq = nextChatRoomSeq;
             
-            // 优化：每获取一页(50个)，就立刻触发一次详情补全，提高感知速度
+            // 优化：每获取一页(50个)，只存入占位符，不再主动触发详情补全（改为懒加载）
             if (newWxids.length >= 50) {
-              const batch = newWxids.splice(0, newWxids.length);
-              console.log(`[AccountStore] 达到 50 个步长，先行补全批次详情...`);
-              this.enqueueContactDetails(batch, uuid);
+              newWxids.splice(0, newWxids.length);
+              console.log(`[AccountStore] 已存入 50 个联系人占位符...`);
             }
             
             // 防止请求过快，给服务器留点喘息时间
@@ -545,13 +723,8 @@ export const useAccountStore = defineStore('account', {
             hasMore = false;
           }
         }
-
-        // 自动触发详情补全
-        if (newWxids.length > 0) {
-          console.log(`[AccountStore] 分页发现 ${newWxids.length} 个联系人需补全详情 (账号: ${uuid})`);
-          this.enqueueContactDetails(newWxids, uuid);
-        }
-
+        
+        // 自动触发详情补全逻辑已移除，改为懒加载模式
         this.lastSyncTimeMap[uuid] = Date.now();
         console.log(`[AccountStore] 通讯录索引同步完成 (账号: ${uuid})`);
       } catch (err) {
@@ -564,6 +737,14 @@ export const useAccountStore = defineStore('account', {
     enqueueContactDetails(wxids: string | string[], accountUuid?: string) {
       const targetUuid = accountUuid || this.activeAccountUuid;
       if (!targetUuid) return;
+
+        if (this.detailsQueue.length > 0) this.processDetailsQueue();
+      if (this.isRedisMode(targetUuid)) {
+        if (isDebug('socket')) {
+          console.log(`[AccountStore:Redis] 处于 Redis 极速模式，跳过对联系人 ${JSON.stringify(wxids)} 的真实 HTTP 详情请求`);
+        }
+        return;
+      }
 
       const ids = Array.isArray(wxids) ? wxids : [wxids];
       const map = this.accountContactMaps[targetUuid] || {};
@@ -590,54 +771,6 @@ export const useAccountStore = defineStore('account', {
       const batchSize = 20;
       // 修正：从活跃账号获取 key，如果没有则回退
       const activeAcc = this.accounts.find(a => a.uuid === this.activeAccountUuid);
-      const key = activeAcc?.sessionKey || this.tokenKey;
-
-      try {
-        let completed = 0;
-        const total = this.detailsQueue.length;
-        
-        while (this.detailsQueue.length > 0) {
-          const batch = this.detailsQueue.splice(0, batchSize);
-          const details: any = await messageApi.getContactDetailsList(key, batch);
-          
-          let detailList: any[] = [];
-          if (Array.isArray(details)) detailList = details;
-          else if (details?.Data && Array.isArray(details.Data)) detailList = details.Data;
-          else if (details?.Data?.ContactList && Array.isArray(details.Data.ContactList)) detailList = details.Data.ContactList;
-          else if (details?.Data?.contactList && Array.isArray(details.Data.contactList)) detailList = details.Data.contactList;
-          else if (details?.Data?.List && Array.isArray(details.Data.List)) detailList = details.Data.List;
-          else if (details?.ContactList && Array.isArray(details.ContactList)) detailList = details.ContactList;
-          else if (details?.contactList && Array.isArray(details.contactList)) detailList = details.contactList;
-          
-          if (detailList.length === 0 && details?.Code !== 0) {
-            console.warn(`[AccountStore] 补全队列批次请求未返回有效数组，可能包含无效ID或触发限流:`, details);
-          }
-          
-          for (const d of detailList) {
-            const wxid = d.userName?.str || d.UserName?.str || d.wxid || d.userName || d.UserName;
-            if (wxid) {
-              await this.updateContact(wxid, d);
-            }
-          }
-          
-          completed += batch.length;
-          console.log(`[AccountStore] 详情补全进度: ${completed}/${total} (当前批次: ${detailList.length})`);
-          
-          await new Promise(r => setTimeout(r, 200));
-        }
-      } catch (err) {
-        console.error('[AccountStore] 补全队列异常:', err);
-      } finally {
-        this.isProcessingQueue = false;
-        if (this.detailsQueue.length > 0) this.processDetailsQueue();
-      }
-    },
-
-    async getAvatarUrl(url: string) {
-      if (!url) return '';
-      if (this.avatarBlobMap[url]) return this.avatarBlobMap[url];
-      const config = this.getEffectiveAvatarConfig();
-      if (config.cacheEnabled) {
         const cached = await contactCache.getAvatar(url);
         if (cached) {
           const blobUrl = URL.createObjectURL(cached);
@@ -662,6 +795,54 @@ export const useAccountStore = defineStore('account', {
         const blobUrl = URL.createObjectURL(blob);
         this.avatarBlobMap[url] = blobUrl;
       } catch (e) {}
+    },
+
+    async saveSingleContactToRedis(uuid: string, wxid: string) {
+      const key = this.accounts.find(a => a.uuid === uuid)?.sessionKey;
+      if (!key) return;
+      const contact = this.accountContactMaps[uuid]?.[wxid];
+      if (!contact) return;
+      
+      const config = this.getEffectiveAvatarConfig(uuid);
+      let writeBackUrl = config.redisWriteBackUrl || 'http://192.168.50.99:7377/other/SaveContactToRedis?key=';
+      if (!writeBackUrl.includes('?key=')) {
+        writeBackUrl = `${writeBackUrl}?key=${key}`;
+      } else if (writeBackUrl.endsWith('?key=')) {
+        writeBackUrl = `${writeBackUrl}${key}`;
+      }
+
+      if (isDebug('cache')) {
+        console.log(`[AccountStore:Redis] 自动回写联系人 ${wxid} 详情到 Redis: ${writeBackUrl}`);
+      }
+      try {
+        await request.post(writeBackUrl, { ModContacts: [contact] });
+      } catch (err) {
+        console.error(`[AccountStore:Redis] 自动回写联系人 ${wxid} 失败:`, err);
+      }
+    },
+
+    async saveAllContactsToRedis(uuid: string) {
+      const key = this.accounts.find(a => a.uuid === uuid)?.sessionKey;
+      if (!key) return;
+      const contacts = Object.values(this.accountContactMaps[uuid] || {});
+      if (contacts.length === 0) return;
+      
+      const config = this.getEffectiveAvatarConfig(uuid);
+      let writeBackUrl = config.redisWriteBackUrl || 'http://192.168.50.99:7377/other/SaveContactToRedis?key=';
+      if (!writeBackUrl.includes('?key=')) {
+        writeBackUrl = `${writeBackUrl}?key=${key}`;
+      } else if (writeBackUrl.endsWith('?key=')) {
+        writeBackUrl = `${writeBackUrl}${key}`;
+      }
+      
+      console.log(`[AccountStore:Redis] 手动回写所有联系人 (${contacts.length} 个) 到 Redis: ${writeBackUrl}`);
+      try {
+        await request.post(writeBackUrl, { ModContacts: contacts });
+        console.log(`[AccountStore:Redis] 批量回写成功！`);
+      } catch (err) {
+        console.error(`[AccountStore:Redis] 批量回写失败:`, err);
+        throw err;
+      }
     }
   }
 });
