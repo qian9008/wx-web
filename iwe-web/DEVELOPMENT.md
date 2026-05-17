@@ -142,3 +142,25 @@
    - 引入 `getAccountAvatar` 账号头像加载优化，在第一栏（账号列表）和聊天对话框（自身头像）中优先查 `contactMap` 获取早已由联系人/消息同步机制下载并存在本地的真实 Blob URL。
    - 极大地拓宽了 `GetProfile` 解析时头像字段名的匹配范围，添加 `headImgUrl`, `HeadImgUrl`, `avatar` 等兼容。
    - 在模板的所有头像 `<img>` 标签中加入了 `referrerpolicy="no-referrer"` 终极防盾牌，防止微信防盗链 Referer 阻碍头像渲染。
+
+### 2026-05-17 手机端 UI 适配与响应式双栏布局设计
+1. **多栏架构自适应合并 (Responsive Dual-Pane Layout)**：
+   - 针对移动端屏幕宽度进行布局优化，通过引入 `@media (max-width: 768px)` 媒体查询，将 PC 端的四栏并列布局无缝转换为流畅的“双视图切换”模式。
+   - 当检测到移动端且无活跃会话时，隐藏聊天内容视窗，以完美的空间利用率展示左侧账号、导航栏和会话列表。
+   - 当点击并打开任意会话时，通过动态类名 `has-active-chat` 精准控制 DOM 显示，隐藏账号与列表，使聊天窗口 100% 占满全屏，提供沉浸式的移动聊天体验。
+2. **手机专属返回机制与返回按钮 (Back-to-List Action)**：
+   - 引入 `IconLeft` 图标，在聊天视窗的头部增加针对移动端定制的“返回”按钮。
+   - 点击该按钮触发 `chatStore.activeId = ''` 清空当前选中会话状态，配合 CSS 瞬时将视图切换回主会话列表，实现了符合人体工程学的移动端交互链路。
+3. **关键组件样式平滑缩放与细节调优 (Micro-animations & Spacing Scale-down)**：
+   - 在手机端针对头像尺寸、侧边栏宽度、加号登录按钮、以及弹窗 `arco-modal` 宽度（自动拉伸至 95%）进行了深度等比缩放和间距微调。
+   - 将配置引导页 `Config.vue` 中的磨砂玻璃卡片宽度由固定 `440px` 变更为自适应 `width: 100%; max-width: 440px`，并在 480px 以下自动缩减 padding 与字号，彻底消除小屏设备上的水平滚动条。
+4. **聊天头像防挤压与滚动条美化 (Avatar Preservation & Sleek Scrollbars)**：
+   - 修复了在窄屏或长文本下，聊天对话流中的用户/好友头像被 flexbox 容器默认 `flex-shrink: 1` 挤压变形的问题，通过引入 `.msg-avatar { flex-shrink: 0; }` 锁定头像尺寸，永远保持 36x36px 的黄金正方形比例。
+   - 对系统会话列表（`.scroll-area`）与聊天历史记录流（`.messages-flow`）的滚动条进行了全局视觉重构。摒弃了 Windows 默认的笨重死板的滚动条样式，替换为极细的 6px 呼吸感半透明圆角滑块，与极客感极佳的暗黑主题（Dark Theme）风格融为一体。
+5. **设置弹窗与表单项深度自适应 (Teleported Modals & Dynamic Form Adaptations)**：
+   - **突破 Teleport Scoped 限制**：由于 Arco Design 的弹窗（`a-modal`）会默认被 Teleport 挂载到 document.body 顶层，原有的 Scoped 样式对其无效。为此，我们在 [Home.vue](file:///d:/Users/Documents/iwe/iwe-web/src/views/Home.vue) 尾部追加了全局无作用域（non-scoped）样式的 `@media (max-width: 768px)` 媒体查询，全局拦截并重写 `.arco-modal` 宽度为 95%，并将内边距与头部间距进行等比缩减。
+   - **重构数据分表网格 (Grid Item Wrapping)**：将数据管理面板中的 `.store-item` 从横向 Row 变更为纵向 Column 排列，使得“清理群消息/公众号消息/全部清理”等按钮群在小屏设备上自动折行，彻底解决了数据管理菜单严重向右溢出和挤压的顽疾。
+   - **表单与按钮组移动端折行 (Form Input Group Wrapping)**：全局将移动端的 `.arco-input-group` 变更为 `flex-direction: column` 并强制内部输入框 `.arco-input-wrapper` 及发送按钮宽度为 100%，完美实现了诸如“绑定手机验证码”表单项在移动端的自适应缩放。
+   - **登录弹窗布局微调 (Login Layout Polish)**：在 [Login.vue](file:///d:/Users/Documents/iwe/iwe-web/src/views/Login.vue) 中优化了移动端下的 `.qr-code` 盒模型尺寸、`.connect-box` 内边距及 Tabs 靠左对齐方式，确保扫码及 62 账号登录在小屏设备上的视觉纯净度。
+
+

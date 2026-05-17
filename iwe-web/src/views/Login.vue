@@ -105,7 +105,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, onUnmounted } from 'vue';
+import { ref, reactive, onMounted, onUnmounted, watch } from 'vue';
 import { loginApi } from '@/api/modules/im';
 import { Message } from '@arco-design/web-vue';
 import {
@@ -133,6 +133,11 @@ const expired = ref(false);
 const statusMsg = ref('请使用微信扫码');
 const qrType = ref<'new' | 'old'>('new');
 let timer: any = null;
+
+// 监听二维码通道切换，自动刷新并获取对应通道的二维码
+watch(qrType, (newType) => {
+  fetchQrCode(newType);
+});
 
 // --- A16 登录相关 (已注释) ---
 /*
@@ -305,4 +310,39 @@ onUnmounted(() => stopPolling());
 .connect-box { padding: 30px 20px; text-align: center; }
 .result-panel { background: #1a1a1a; padding: 12px; border-radius: 4px; border: 1px solid #333; text-align: left; max-height: 200px; overflow-y: auto; }
 .result-panel pre { margin: 0; font-size: 12px; color: #07c160; white-space: pre-wrap; word-break: break-all; }
+
+/* Sleek custom scrollbars for result-panel */
+.result-panel::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+.result-panel::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 10px;
+}
+.result-panel::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+.result-panel::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@media (max-width: 480px) {
+  .login-container {
+    padding: 0 !important;
+  }
+  .qr-code {
+    width: 150px !important;
+    height: 150px !important;
+  }
+  .connect-box {
+    padding: 15px 5px !important;
+  }
+  :deep(.arco-tabs-nav-tab) {
+    justify-content: flex-start !important;
+  }
+  .login-box {
+    padding: 10px 0 !important;
+  }
+}
 </style>

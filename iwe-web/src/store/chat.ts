@@ -190,6 +190,11 @@ export const useChatStore = defineStore('chat', {
     async loadHistory(userName: string, partnerId: string) {
       if (!userName || !partnerId) return;
 
+      // 🚀 优化：如果内存中已缓存了该联系人的消息，直接跳过 IndexedDB 历史加载
+      if (this.accountMessages[userName]?.[partnerId] && this.accountMessages[userName][partnerId].length > 0) {
+        return;
+      }
+
       // 从 IndexedDB 加载最近的 50 条本地缓存
       const localMsgs = await contactCache.getMessages(userName, partnerId, 50);
 
@@ -220,6 +225,11 @@ export const useChatStore = defineStore('chat', {
 
     async loadConversations(userName: string) {
       if (!userName) return;
+
+      // 🚀 优化：如果内存中已有当前账号的会话列表，直接使用，跳过 IndexedDB 读取
+      if (this.accountConversations[userName] && this.accountConversations[userName].length > 0) {
+        return;
+      }
 
       const accountStore = useAccountStore();
       const dbConvs = await contactCache.getConversations(userName);

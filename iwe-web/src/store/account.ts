@@ -142,40 +142,7 @@ export const useAccountStore = defineStore('account', {
       try {
         let data: any[] = [];
         
-        if (this.adminKey) {
-          const res: any = await adminApi.getOnlineAccounts();
-          console.log('[AccountStore] 使用 ADMIN_KEY 获取到账号列表');
-          data = res.Data || res;
-
-          // adminKey 模式：先用 API 返回的 ID 建账号，再通过 getProfile 修正为真实 wxid
-          this.accounts = await Promise.all((Array.isArray(data) ? data : []).map(async (acc: any) => {
-            const userName = acc.userName || acc.UserName || acc.wx_id || acc.uuid || acc.wxid;
-            const key = acc.license || acc.key || acc.session_key || acc.sessionKey || '';
-            const rawAvatar = acc.avatar || '';
-            // 直接用已缓存的 blob URL，如果本地无缓存就用原始 URL
-            const resolvedAvatar = rawAvatar ? await this.getAvatarUrl(rawAvatar) || rawAvatar : '';
-            return {
-              uuid: userName || key || '',
-              sessionKey: key,
-              nickname: acc.nick_name || acc.nickname || (userName ? '已登录' : '未登录槽位'),
-              avatar: resolvedAvatar,
-              status: 'offline' // 初始先设为离线，由 checkSingleAccountStatus 修正
-            };
-          }));
-
-          if (this.accounts.length > 0 && !this.activeAccountUuid) {
-            const firstOnline = this.accounts.find(a => a.uuid);
-            if (firstOnline) this.activeAccountUuid = firstOnline.uuid;
-          }
-
-          // 异步修正 ID：getProfile → 拿到真实 wxid → 再注册 Socket
-          this.accounts.forEach(acc => {
-            if (acc.sessionKey) {
-              this.fetchProfileAndFixUuid(acc.sessionKey);
-            }
-          });
-
-        } else if (this.tokenKey) {
+        if (this.tokenKey) {
           // TOKEN_KEY 模式：直接调 getProfile 作为唯一真相，不依赖 getOnlineStatus 解析 wxid
           console.log('[AccountStore] 使用 TOKEN_KEY 模式，调用 GetProfile 解析真实 wxid...');
           try {
@@ -234,6 +201,39 @@ export const useAccountStore = defineStore('account', {
               }
             }
           }
+
+        } else if (this.adminKey) {
+          const res: any = await adminApi.getOnlineAccounts();
+          console.log('[AccountStore] 使用 ADMIN_KEY 获取到账号列表');
+          data = res.Data || res;
+
+          // adminKey 模式：先用 API 返回的 ID 建账号，再通过 getProfile 修正为真实 wxid
+          this.accounts = await Promise.all((Array.isArray(data) ? data : []).map(async (acc: any) => {
+            const userName = acc.userName || acc.UserName || acc.wx_id || acc.uuid || acc.wxid;
+            const key = acc.license || acc.key || acc.session_key || acc.sessionKey || '';
+            const rawAvatar = acc.avatar || '';
+            // 直接用已缓存的 blob URL，如果本地无缓存就用原始 URL
+            const resolvedAvatar = rawAvatar ? await this.getAvatarUrl(rawAvatar) || rawAvatar : '';
+            return {
+              uuid: userName || key || '',
+              sessionKey: key,
+              nickname: acc.nick_name || acc.nickname || (userName ? '已登录' : '未登录槽位'),
+              avatar: resolvedAvatar,
+              status: 'offline' // 初始先设为离线，由 checkSingleAccountStatus 修正
+            };
+          }));
+
+          if (this.accounts.length > 0 && !this.activeAccountUuid) {
+            const firstOnline = this.accounts.find(a => a.uuid);
+            if (firstOnline) this.activeAccountUuid = firstOnline.uuid;
+          }
+
+          // 异步修正 ID：getProfile → 拿到真实 wxid → 再注册 Socket
+          this.accounts.forEach(acc => {
+            if (acc.sessionKey) {
+              this.fetchProfileAndFixUuid(acc.sessionKey);
+            }
+          });
         }
       } catch (err) {
         console.error('获取账号列表失败:', err);
@@ -370,6 +370,14 @@ export const useAccountStore = defineStore('account', {
       const targetUuid = accountUuid || this.activeAccountUuid;
       if (!targetUuid) return;
       
+      // 🚀 优化：如果内存已存在该账号的联系人，不再重复读取 IndexedDB
+      if (this.accountContactMaps[targetUuid] && Object.keys(this.accountContactMaps[targetUuid]).length > 0) {
+        if (this.debug.cache) {
+          console.log(`[AccountStore] 命中内存缓存，跳过 DB 读取联系人 (账号: ${targetUuid})`);
+        }
+        return;
+      }
+      
       const all = await contactCache.getAll(targetUuid);
       const map: Record<string, any> = {};
       all.forEach((c: any) => {
@@ -381,7 +389,7 @@ export const useAccountStore = defineStore('account', {
       });
       
       this.accountContactMaps[targetUuid] = map;
-      console.log(`[AccountStore] 内存镜像已加载 ${Object.keys(map).length} 个联系人 (账号: ${targetUuid})`);
+      console.log(`[AccountStore] 从 DB 加载了 ${Object.keys(map).length} 个联系人 (账号: ${targetUuid})`);
     },
 
     async updateContact(wxid: string, detail: any, accountUuid?: string) {

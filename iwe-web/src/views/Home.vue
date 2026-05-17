@@ -1,7 +1,17 @@
 <template>
-  <div class="workbench">
+  <div class="workbench" :class="{ 'has-active-chat': !!chatStore.activeId }">
     <!-- 第一栏：账号栏 -->
     <div v-if="!accountStore.tokenKey" class="column account-bar">
+      <!-- 顶部 Logo / 装饰 -->
+      <div class="account-bar-logo">
+        <div class="logo-inner">
+          <icon-thunderbolt :size="16" />
+        </div>
+      </div>
+      
+      <div class="bar-divider"></div>
+
+      <!-- 账号列表 -->
       <div class="account-list">
         <div 
           v-for="(acc, index) in accountStore.accounts" 
@@ -13,60 +23,105 @@
           }"
           @click="handleSwitchAccount(acc.uuid)"
         >
+          <!-- 悬浮发光背景和指示器 -->
+          <div class="active-indicator"></div>
+          
           <a-tooltip :content="`${acc.nickname} (${acc.status === 'online' ? '在线' : '离线'})`" position="right">
-            <a-badge :status="acc.status === 'online' ? 'success' : 'normal'" :offset="[-5, 40]">
-              <a-avatar :size="48" shape="square" :style="{ backgroundColor: '#333' }">
-                <img v-if="getAccountAvatar(acc)" :src="getAccountAvatar(acc)" referrerpolicy="no-referrer" :style="acc.status === 'offline' ? { filter: 'grayscale(100%)', opacity: '0.6' } : {}" />
-                <template v-else>
-                  <span :style="acc.status === 'offline' ? { color: '#666' } : {}">{{ acc.nickname[0] }}</span>
-                </template>
-              </a-avatar>
-            </a-badge>
+            <div class="avatar-wrapper">
+              <a-badge :status="acc.status === 'online' ? 'success' : 'normal'" :offset="[-2, 38]">
+                <a-avatar :size="46" shape="square" class="acc-avatar">
+                  <img v-if="getAccountAvatar(acc)" :src="getAccountAvatar(acc)" referrerpolicy="no-referrer" :style="acc.status === 'offline' ? { filter: 'grayscale(100%)', opacity: '0.6' } : {}" />
+                  <template v-else>
+                    <span :style="acc.status === 'offline' ? { color: '#666' } : {}">{{ acc.nickname[0] }}</span>
+                  </template>
+                </a-avatar>
+              </a-badge>
+            </div>
           </a-tooltip>
         </div>
         
-        <div class="add-account-btn" @click="handleAddAccount">
-          <div class="icon-plus-wrapper">
-            <icon-plus :size="20" />
-          </div>
+        <!-- 功能按钮组：加号 & 钥匙 -->
+        <div class="action-buttons-group">
+          <a-tooltip content="扫码添加账号" position="right">
+            <div class="add-account-btn" @click="handleAddAccount">
+              <div class="icon-wrapper">
+                <icon-plus :size="18" />
+              </div>
+            </div>
+          </a-tooltip>
+          
+          <a-tooltip content="手动输入授权码登录" position="right">
+            <div class="add-account-btn manual-btn" @click="handleManualLogin">
+              <div class="icon-wrapper">
+                <icon-safe :size="16" />
+              </div>
+            </div>
+          </a-tooltip>
         </div>
       </div>
 
-      <div class="global-settings-btn" @click="handleOpenGlobalSettings">
-        <icon-tool :size="20" />
+      <!-- 底部系统设置 -->
+      <div class="account-bar-footer">
+        <a-tooltip content="系统管理控制台" position="right">
+          <div class="global-settings-btn" @click="handleOpenGlobalSettings">
+            <icon-tool :size="20" />
+          </div>
+        </a-tooltip>
       </div>
     </div>
 
     <!-- 第二栏：功能导航 -->
     <div class="column nav-bar">
-      <div 
-        class="nav-item" 
-        :class="{ active: activeTab === 'chat' }"
-        @click="activeTab = 'chat'"
-      >
-        <icon-message :size="24" />
-      </div>
-      <div 
-        class="nav-item" 
-        :class="{ active: activeTab === 'contact' }"
-        @click="handleSwitchContact"
-      >
-        <icon-user :size="24" />
+      <!-- 顶部当前账号在线状态装饰 -->
+      <div class="nav-bar-header">
+        <div class="status-indicator">
+          <a-tooltip :content="`当前账号状态: ${activeAccountOnlineStatus}`" position="right">
+            <div class="status-pulse" :class="{ online: activeAccountOnlineStatus === '在线' }">
+              <span class="pulse-ring"></span>
+              <span class="pulse-dot"></span>
+            </div>
+          </a-tooltip>
+        </div>
       </div>
 
-      <div class="nav-item status-indicator" style="cursor: default; margin-top: auto; margin-bottom: 10px;">
-        <a-tooltip :content="`当前状态: ${activeAccountOnlineStatus}`" position="right">
-          <icon-check-circle v-if="activeAccountOnlineStatus === '在线'" :size="24" style="color: #00b42a;" />
-          <icon-close-circle v-else :size="24" style="color: #f53f3f;" />
+      <!-- 导航项列表 -->
+      <div class="nav-items-list">
+        <a-tooltip content="聊天会话" position="right">
+          <div 
+            class="nav-item" 
+            :class="{ active: activeTab === 'chat' }"
+            @click="activeTab = 'chat'"
+          >
+            <div class="nav-item-bg"></div>
+            <icon-message :size="22" class="nav-icon" />
+          </div>
+        </a-tooltip>
+        
+        <a-tooltip content="通讯录" position="right">
+          <div 
+            class="nav-item" 
+            :class="{ active: activeTab === 'contact' }"
+            @click="handleSwitchContact"
+          >
+            <div class="nav-item-bg"></div>
+            <icon-user :size="22" class="nav-icon" />
+          </div>
         </a-tooltip>
       </div>
 
-      <div class="nav-item settings-item" @click="handleOpenPersonalSettings">
-        <icon-settings :size="24" />
-      </div>
-
-      <div class="nav-item" style="margin-top: 10px;" @click="handleManualLogin">
-        <icon-plus :size="24" />
+      <!-- 底部配置与登录 -->
+      <div class="nav-bar-footer">
+        <a-tooltip content="当前账号设置" position="right">
+          <div class="nav-item settings-item" @click="handleOpenPersonalSettings">
+            <icon-settings :size="22" />
+          </div>
+        </a-tooltip>
+        
+        <a-tooltip v-if="activeAccountOnlineStatus !== '在线'" :content="accountStore.tokenKey ? '扫码登录微信' : '手动输入授权码登录'" position="right">
+          <div class="nav-item manual-login-item" @click="handleManualLogin">
+            <icon-import :size="22" />
+          </div>
+        </a-tooltip>
       </div>
     </div>
 
@@ -76,7 +131,7 @@
         <a-input-search placeholder="搜索" background-color="#2e2e2e" />
       </div>
       
-      <div class="scroll-area">
+      <div class="scroll-area" @scroll="handleScroll">
         <div v-show="activeTab === 'chat'">
           <div 
             v-for="conv in currentConversations" 
@@ -121,7 +176,7 @@
           </div>
           <div v-show="contactCategory === 'friend'">
             <div 
-              v-for="contact in sortedContacts.friend" 
+              v-for="contact in slicedFriends" 
               :key="getContactId(contact)"
               class="conv-item"
               :class="{ active: chatStore.activeId === getContactId(contact) }"
@@ -143,7 +198,7 @@
 
           <div v-show="contactCategory === 'room'">
             <div 
-              v-for="contact in sortedContacts.room" 
+              v-for="contact in slicedRooms" 
               :key="getContactId(contact)"
               class="conv-item"
               :class="{ active: chatStore.activeId === getContactId(contact) }"
@@ -165,7 +220,7 @@
 
           <div v-show="contactCategory === 'official'">
             <div 
-              v-for="contact in sortedContacts.official" 
+              v-for="contact in slicedOfficials" 
               :key="getContactId(contact)"
               class="conv-item"
               :class="{ active: chatStore.activeId === getContactId(contact) }"
@@ -192,6 +247,10 @@
     <div class="column chat-window">
       <template v-if="chatStore.activeId">
         <div class="chat-header">
+          <div class="chat-header-back" @click="chatStore.activeId = ''">
+            <icon-left :size="18" />
+            <span>返回</span>
+          </div>
           <div class="title">{{ currentChatPartnerName }}</div>
         </div>
         
@@ -202,7 +261,7 @@
             class="msg-row"
             :class="{ self: msg.isSelf }"
           >
-            <a-avatar :size="36" shape="square">
+            <a-avatar :size="36" shape="square" class="msg-avatar">
               <img v-if="msg.isSelf ? currentAccountAvatar : currentPartnerAvatar" :src="msg.isSelf ? currentAccountAvatar : currentPartnerAvatar" referrerpolicy="no-referrer" loading="lazy" />
               <template v-else>{{ (msg.isSelf ? 'Me' : currentChatPartnerName[0]) }}</template>
             </a-avatar>
@@ -249,8 +308,40 @@
     </div>
 
     <!-- 弹窗部分 -->
-    <a-modal v-model:visible="loginVisible" title="添加微信账号" :footer="false" unmount-on-close>
+    <a-modal v-model:visible="loginVisible" title="微信登录与管理" width="550px" :footer="false" unmount-on-close>
       <Login :assigned-key="pendingSessionKey" @success="handleLoginSuccess" />
+      
+      <!-- 只有在拥有活跃的个人授权码时，才显示高级操作，方便免签登录或维护 -->
+      <template v-if="accountStore.tokenKey">
+        <a-divider style="margin: 20px 0 15px 0;">高级操作</a-divider>
+        <a-form :model="accountStore.getEffectiveAvatarConfig()" layout="vertical" style="padding: 0 12px;">
+          <a-form-item label="在线状态">
+            <a-space>
+              <a-button size="small" type="outline" @click="handleAccountStatusActionForCurrent('status')">
+                <template #icon><icon-check-circle /></template>在线查询
+              </a-button>
+              <a-button size="small" type="outline" status="success" @click="handleAccountStatusActionForCurrent('wakeup')">
+                <template #icon><icon-thunderbolt /></template>唤醒登录
+              </a-button>
+            </a-space>
+          </a-form-item>
+          <a-form-item label="绑定手机验证码">
+            <a-input-group>
+              <a-input v-model="verifyMobile" placeholder="手机号" size="small" style="width: 200px" />
+              <a-button type="primary" size="small" @click="handleAccountVerifyCodeForCurrent">发送验证码</a-button>
+            </a-input-group>
+          </a-form-item>
+          <a-form-item label="环境数据" help="提取当前设备用于免验登录的 62 数据">
+            <a-button type="outline" size="small" status="warning" @click="handleExtract62DataForCurrent" :loading="extract62Loading">提取 62 数据</a-button>
+            <div v-if="extracted62Data" style="margin-top: 10px; width: 100%;">
+              <a-textarea v-model="extracted62Data" :auto-size="{minRows: 2, maxRows: 4}" readonly />
+            </div>
+          </a-form-item>
+          <div v-if="currentAccountResult" style="margin-top: 10px;">
+            <pre class="status-result">{{ currentAccountResult }}</pre>
+          </div>
+        </a-form>
+      </template>
     </a-modal>
 
     <a-modal v-model:visible="adminVisible" :title="adminPanelContext === 'global' ? '全局管理控制台' : '个人偏好设置'" width="800px" :footer="false">
@@ -505,32 +596,7 @@
               <a-form-item label="好友列表" help="调用 /friend/GetFriendList 获取最新好友列表">
                 <a-button type="primary" size="small" @click="handleGetFriendList" :loading="friendListLoading">获取好友列表</a-button>
               </a-form-item>
-              <a-divider>高级操作</a-divider>
-              <a-form-item label="在线状态">
-                <a-space>
-                  <a-button size="small" type="outline" @click="handleAccountStatusActionForCurrent('status')">
-                    <template #icon><icon-check-circle /></template>在线查询
-                  </a-button>
-                  <a-button size="small" type="outline" status="success" @click="handleAccountStatusActionForCurrent('wakeup')">
-                    <template #icon><icon-thunderbolt /></template>唤醒登录
-                  </a-button>
-                </a-space>
-              </a-form-item>
-              <a-form-item label="绑定手机验证码">
-                <a-input-group>
-                  <a-input v-model="verifyMobile" placeholder="手机号" size="small" style="width: 200px" />
-                  <a-button type="primary" size="small" @click="handleAccountVerifyCodeForCurrent">发送验证码</a-button>
-                </a-input-group>
-              </a-form-item>
-              <a-form-item label="环境数据" help="提取当前设备用于免验登录的 62 数据">
-                <a-button type="outline" size="small" status="warning" @click="handleExtract62DataForCurrent" :loading="extract62Loading">提取 62 数据</a-button>
-                <div v-if="extracted62Data" style="margin-top: 10px; width: 100%;">
-                  <a-textarea v-model="extracted62Data" :auto-size="{minRows: 2, maxRows: 6}" readonly />
-                </div>
-              </a-form-item>
-              <div v-if="currentAccountResult" style="margin-top: 10px;">
-                <pre class="status-result">{{ currentAccountResult }}</pre>
-              </div>
+              <!-- 高级操作已移动至登录面板内 -->
             </a-form>
           </a-tab-pane>
         </a-tabs>
@@ -550,7 +616,8 @@ import { Message } from '@arco-design/web-vue';
 import { 
   IconPlus, IconMessage, IconUser, IconSettings, 
   IconFaceSmileFill, IconFolder, IconImage, IconTool,
-  IconThunderbolt, IconCheckCircle, IconSafe, IconCloseCircle
+  IconThunderbolt, IconCheckCircle, IconSafe, IconCloseCircle,
+  IconImport, IconLeft
 } from '@arco-design/web-vue/es/icon';
 import { contactCache } from '@/utils/contactCache';
 import Login from './Login.vue';
@@ -690,11 +757,17 @@ const handleAddAccount = () => {
 };
 
 const handleManualLogin = () => {
-  // 手动授权码进入登录
-  const key = prompt('请输入您的授权码（Auth Code）', '');
-  if (key !== null) {
-    pendingSessionKey.value = key.trim();
+  // 如果已经有个人 IM 密钥，直接使用，不需要再弹窗手动输入授权码
+  if (accountStore.tokenKey) {
+    pendingSessionKey.value = accountStore.tokenKey.trim();
     loginVisible.value = true;
+  } else {
+    // 兜底处理：若无个人密钥，则仍旧提示输入授权码
+    const key = prompt('请输入您的授权码（Auth Code）', '');
+    if (key !== null) {
+      pendingSessionKey.value = key.trim();
+      loginVisible.value = true;
+    }
   }
 };
 
@@ -795,6 +868,11 @@ const contactCategory = ref('friend'); // friend, room, official
 
 // 内存镜像获取联系人并分类
 const sortedContacts = computed(() => {
+  // 🚀 极致优化：如果当前没有处于“通讯录” Tab，直接返回空分类，阻止 Vue 执行几千个节点的同步 Diff 渲染
+  if (activeTab.value !== 'contact') {
+    return { friend: [], room: [], official: [] };
+  }
+
   const all = Object.values(accountStore.contactMap);
   const categories = {
     friend: [] as any[],
@@ -827,11 +905,43 @@ const sortedContacts = computed(() => {
   return categories;
 });
 
-const displayContactList = computed(() => {
-  if (contactCategory.value === 'room') return sortedContacts.value.room;
-  if (contactCategory.value === 'official') return sortedContacts.value.official;
-  return sortedContacts.value.friend;
+// --- 分批增量渲染逻辑，打造原生级流畅度 ---
+const visibleFriendLimit = ref(100);
+const visibleRoomLimit = ref(100);
+const visibleOfficialLimit = ref(100);
+
+const slicedFriends = computed(() => {
+  return sortedContacts.value.friend.slice(0, visibleFriendLimit.value);
 });
+
+const slicedRooms = computed(() => {
+  return sortedContacts.value.room.slice(0, visibleRoomLimit.value);
+});
+
+const slicedOfficials = computed(() => {
+  return sortedContacts.value.official.slice(0, visibleOfficialLimit.value);
+});
+
+// 重置分页限制，切换页签或账号时恢复初始展示数量
+watch([() => activeTab.value, () => contactCategory.value, () => accountStore.activeAccountUuid], () => {
+  visibleFriendLimit.value = 100;
+  visibleRoomLimit.value = 100;
+  visibleOfficialLimit.value = 100;
+});
+
+// 监听滚动事件，接近底部时增量加载
+const handleScroll = (e: Event) => {
+  const target = e.target as HTMLElement;
+  if (target.scrollHeight - target.scrollTop - target.clientHeight < 300) {
+    if (contactCategory.value === 'friend' && visibleFriendLimit.value < sortedContacts.value.friend.length) {
+      visibleFriendLimit.value += 100;
+    } else if (contactCategory.value === 'room' && visibleRoomLimit.value < sortedContacts.value.room.length) {
+      visibleRoomLimit.value += 100;
+    } else if (contactCategory.value === 'official' && visibleOfficialLimit.value < sortedContacts.value.official.length) {
+      visibleOfficialLimit.value += 100;
+    }
+  }
+};
 
 const currentConversations = computed(() => {
   const accountUuid = accountStore.activeAccountUuid;
@@ -1210,15 +1320,46 @@ onUnmounted(() => {
 .column { height: 100%; display: flex; flex-direction: column; }
 .account-bar { 
   width: 68px; 
-  background: #0a0a0a; 
+  background: #0f1015; /* Sleek futuristic deep dark blue-grey */
   align-items: center; 
-  padding: 20px 0; 
-  border-right: 1px solid #2e2e2e; 
+  padding: 16px 0; 
+  border-right: 1px solid rgba(255, 255, 255, 0.05); 
   display: flex; 
   flex-direction: column; 
   height: 100vh; 
   flex-shrink: 0;
+  z-index: 10;
 }
+
+.account-bar-logo {
+  width: 40px;
+  height: 40px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.logo-inner {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: rgba(7, 193, 96, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(7, 193, 96, 0.2);
+  color: #07c160;
+  box-shadow: 0 0 10px rgba(7, 193, 96, 0.15);
+}
+
+.bar-divider {
+  width: 32px;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.08);
+  margin: 12px 0;
+}
+
 .account-list { 
   flex: 1; 
   display: flex; 
@@ -1226,44 +1367,328 @@ onUnmounted(() => {
   align-items: center; 
   width: 100%; 
   overflow-y: auto; 
+  scrollbar-width: none; /* Hide scrollbar for layout purity */
 }
-.account-item { margin-bottom: 18px; cursor: pointer; transition: all 0.3s; padding: 0 4px; }
-.account-item.active { border-left: 4px solid #07c160; }
-.add-account-btn { cursor: pointer; color: #86909c; margin-bottom: 20px; }
-.icon-plus-wrapper { background: #2e2e2e; padding: 8px; border-radius: 4px; }
-.global-settings-btn { 
-  margin-top: auto; 
+.account-list::-webkit-scrollbar {
+  display: none;
+}
+
+.account-item { 
+  margin-bottom: 14px; 
   cursor: pointer; 
-  color: #919191; 
-  transition: color 0.2s; 
-  padding: 20px 0;
+  position: relative; 
+  width: 100%; 
+  display: flex; 
+  justify-content: center; 
+  align-items: center;
+  padding: 2px 0;
+}
+
+.active-indicator {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 4px;
+  height: 0;
+  background: #07c160;
+  border-radius: 0 4px 4px 0;
+  transition: all 0.3s cubic-bezier(0.18, 0.89, 0.32, 1.28);
+  opacity: 0;
+}
+
+.account-item.active .active-indicator {
+  height: 32px;
+  opacity: 1;
+}
+
+.account-item:hover:not(.active) .active-indicator {
+  height: 20px;
+  opacity: 0.6;
+}
+
+.avatar-wrapper {
+  transition: all 0.3s cubic-bezier(0.18, 0.89, 0.32, 1.28);
+}
+
+.account-item:hover .avatar-wrapper {
+  transform: scale(1.05);
+}
+
+.account-item.active .avatar-wrapper {
+  transform: scale(1.02);
+}
+
+:deep(.acc-avatar.arco-avatar-square) {
+  border-radius: 12px !important;
+  border: 1.5px solid transparent;
+  transition: all 0.3s;
+}
+
+.account-item.active :deep(.acc-avatar.arco-avatar-square) {
+  border-color: #07c160;
+  box-shadow: 0 0 12px rgba(7, 193, 96, 0.3);
+}
+
+.action-buttons-group {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: center;
+}
+
+.add-account-btn { 
+  cursor: pointer; 
+  color: #86909c; 
+  width: 44px;
+  height: 44px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px dashed rgba(255, 255, 255, 0.12);
+  transition: all 0.3s;
+}
+
+.add-account-btn:hover { 
+  color: #07c160; 
+  background: rgba(7, 193, 96, 0.1); 
+  border-color: rgba(7, 193, 96, 0.4);
+  box-shadow: 0 0 10px rgba(7, 193, 96, 0.15);
+}
+
+.add-account-btn.manual-btn:hover { 
+  color: #ffb400; 
+  background: rgba(255, 180, 0, 0.1); 
+  border-color: rgba(255, 180, 0, 0.4);
+  box-shadow: 0 0 10px rgba(255, 180, 0, 0.15);
+}
+
+.add-account-btn .icon-wrapper {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.3s;
+}
+
+.add-account-btn:hover .icon-wrapper {
+  transform: scale(1.1);
+}
+
+.add-account-btn:not(.manual-btn):hover .icon-wrapper {
+  transform: rotate(90deg) scale(1.1);
+}
+
+.account-bar-footer {
+  margin-top: auto;
+  padding-bottom: 20px; /* Lift wrench icon up safely */
   display: flex;
   justify-content: center;
   width: 100%;
 }
-.global-settings-btn:hover { color: #07c160; }
 
+.global-settings-btn { 
+  cursor: pointer; 
+  color: #86909c; 
+  transition: all 0.3s; 
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.global-settings-btn:hover { 
+  color: #07c160; 
+  background: rgba(255, 255, 255, 0.05);
+  transform: rotate(45deg);
+}
+
+/* --- Navigation Bar (2nd Column) --- */
 .nav-bar { 
   width: 60px; 
-  background: #1e1e1e; 
+  background: #14151a; /* Balanced mid-dark grey-blue */
   align-items: center; 
-  padding: 20px 0; 
-  border-right: 1px solid #2e2e2e; 
+  padding: 16px 0 0 0; /* Changed bottom padding to 0, footer will handle spacing */
+  border-right: 1px solid rgba(255, 255, 255, 0.05); 
   display: flex; 
   flex-direction: column; 
   height: 100vh;
   flex-shrink: 0;
+  z-index: 9;
 }
-.nav-item { color: #919191; margin-bottom: 30px; cursor: pointer; transition: color 0.2s; }
-.nav-item:hover { color: #07c160; }
-.nav-item.active { color: #07c160; }
-.settings-item { 
-  margin-top: auto; 
-  cursor: pointer;
-  padding: 20px 0;
+
+.nav-bar-header {
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 16px;
+}
+
+.nav-items-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+  align-items: center;
+}
+
+.nav-item { 
+  position: relative;
+  width: 42px;
+  height: 42px;
   display: flex;
   justify-content: center;
+  align-items: center;
+  cursor: pointer; 
+  color: #86909c; 
+  transition: all 0.3s;
+  border-radius: 12px;
+}
+
+.nav-item-bg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  border-radius: 12px;
+  background: transparent;
+  transition: all 0.3s cubic-bezier(0.18, 0.89, 0.32, 1.28);
+  z-index: 1;
+}
+
+.nav-icon {
+  z-index: 2;
+  transition: transform 0.3s;
+}
+
+.nav-item:hover .nav-icon {
+  transform: scale(1.05);
+  color: #e5e6eb;
+}
+
+.nav-item:hover .nav-item-bg {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.nav-item.active { 
+  color: #07c160; 
+}
+
+.nav-item.active .nav-item-bg {
+  background: rgba(7, 193, 96, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(7, 193, 96, 0.2);
+}
+
+.nav-item.active .nav-icon {
+  transform: scale(1.05);
+  color: #07c160;
+}
+
+.nav-bar-footer {
+  margin-top: auto;
+  padding-bottom: 20px; /* Lift gear and plus icons up safely */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
   width: 100%;
+}
+
+.status-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+}
+
+.status-pulse {
+  position: relative;
+  width: 10px;
+  height: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pulse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #f53f3f;
+  transition: background 0.3s;
+  box-shadow: 0 0 8px rgba(245, 63, 63, 0.4);
+}
+
+.pulse-ring {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid #f53f3f;
+  opacity: 0;
+  animation: pulse-anim 2.4s cubic-bezier(0.24, 0, 0.38, 1) infinite;
+}
+
+.status-pulse.online .pulse-dot {
+  background: #00b42a;
+  box-shadow: 0 0 8px rgba(0, 180, 42, 0.5);
+}
+
+.status-pulse.online .pulse-ring {
+  border-color: #00b42a;
+}
+
+@keyframes pulse-anim {
+  0% {
+    transform: scale(0.5);
+    opacity: 0.8;
+  }
+  100% {
+    transform: scale(1.4);
+    opacity: 0;
+  }
+}
+
+.settings-item { 
+  color: #86909c; 
+  transition: all 0.3s;
+  border-radius: 50%;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.settings-item:hover { 
+  color: #07c160; 
+  background: rgba(255, 255, 255, 0.05);
+  transform: rotate(45deg);
+}
+
+.manual-login-item {
+  color: #86909c; 
+  transition: all 0.3s;
+  border-radius: 50%;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.manual-login-item:hover {
+  color: #07c160;
+  background: rgba(255, 255, 255, 0.05);
+  transform: scale(1.1);
 }
 .chat-list { width: 280px; background: #232323; border-right: 1px solid #2e2e2e; }
 .list-search { padding: 15px; }
@@ -1285,8 +1710,30 @@ onUnmounted(() => {
 .chat-window { flex: 1; background: #1a1a1a; display: flex; flex-direction: column; }
 .chat-header { height: 60px; border-bottom: 1px solid #2e2e2e; display: flex; align-items: center; padding: 0 20px; }
 .messages-flow { flex: 1; overflow-y: auto; padding: 20px; }
+
+/* Sleek custom scrollbars */
+.scroll-area::-webkit-scrollbar,
+.messages-flow::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.scroll-area::-webkit-scrollbar-thumb,
+.messages-flow::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 10px;
+}
+.scroll-area::-webkit-scrollbar-thumb:hover,
+.messages-flow::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+.scroll-area::-webkit-scrollbar-track,
+.messages-flow::-webkit-scrollbar-track {
+  background: transparent;
+}
+
 .msg-row { display: flex; margin-bottom: 20px; }
 .msg-row.self { flex-direction: row-reverse; }
+.msg-avatar { flex-shrink: 0; }
 .msg-bubble { max-width: 70%; padding: 10px 14px; border-radius: 8px; background: #2e2e2e; margin: 0 12px; }
 .self .msg-bubble { background: #268d44; color: #fff; }
 .input-section { height: 160px; border-top: 1px solid #2e2e2e; display: flex; flex-direction: column; }
@@ -1314,4 +1761,158 @@ onUnmounted(() => {
 .contact-tabs { display: flex; padding: 10px; background: #1a1a1a; border-bottom: 1px solid #2e2e2e; sticky: top; top: 0; z-index: 10; }
 .contact-tabs .tab-item { flex: 1; text-align: center; font-size: 12px; cursor: pointer; color: #86909c; padding: 4px 0; border-radius: 4px; transition: all 0.2s; }
 .contact-tabs .tab-item.active { background: #2e2e2e; color: #07c160; font-weight: bold; }
+
+/* --- Mobile Adaptation (手机端适配) --- */
+.chat-header-back {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  /* Hide or show columns based on active chat */
+  .workbench.has-active-chat .account-bar,
+  .workbench.has-active-chat .nav-bar,
+  .workbench.has-active-chat .chat-list {
+    display: none !important;
+  }
+  .workbench.has-active-chat .chat-window {
+    display: flex !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    flex: 1 !important;
+  }
+
+  .workbench:not(.has-active-chat) .chat-window {
+    display: none !important;
+  }
+  .workbench:not(.has-active-chat) .account-bar {
+    width: 60px !important;
+    padding: 10px 0 !important;
+  }
+  .workbench:not(.has-active-chat) .nav-bar {
+    width: 50px !important;
+    padding: 10px 0 !important;
+  }
+  .workbench:not(.has-active-chat) .chat-list {
+    flex: 1 !important;
+    width: auto !important;
+    display: flex !important;
+  }
+
+  /* Scale down sizing for mobile comfort */
+  .acc-avatar {
+    width: 40px !important;
+    height: 40px !important;
+  }
+  :deep(.acc-avatar.arco-avatar-square) {
+    border-radius: 8px !important;
+  }
+  .action-buttons-group {
+    gap: 8px !important;
+  }
+  .add-account-btn {
+    width: 36px !important;
+    height: 36px !important;
+  }
+  .global-settings-btn, .settings-item, .manual-login-item {
+    width: 36px !important;
+    height: 36px !important;
+  }
+  .nav-item {
+    width: 36px !important;
+    height: 36px !important;
+  }
+  
+  /* Mobile back button in chat header */
+  .chat-header {
+    padding: 0 12px !important;
+    gap: 8px;
+  }
+  .chat-header-back {
+    display: flex !important;
+    align-items: center;
+    color: #07c160;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    margin-right: 8px;
+    padding: 6px 0;
+  }
+  .chat-header-back span {
+    margin-left: 2px;
+  }
+  
+  /* Message layout on mobile */
+  .msg-bubble {
+    max-width: 85% !important;
+  }
+  
+  /* Input area size adjustments */
+  .input-section {
+    height: 120px !important;
+  }
+  .input-section textarea {
+    padding: 8px 12px !important;
+    font-size: 14px !important;
+  }
+  
+  /* Premium mobile modal sizing */
+  :deep(.arco-modal) {
+    width: 95% !important;
+    max-width: 550px !important;
+  }
+
+  /* Adaptive layout for settings controls within modals */
+  .store-item {
+    flex-direction: column !important;
+    align-items: flex-start !important;
+    gap: 12px !important;
+  }
+  .store-item .arco-space {
+    flex-wrap: wrap !important;
+    width: 100% !important;
+  }
+  .store-item .arco-space-item {
+    margin-bottom: 6px !important;
+  }
+  .admin-panel :deep(.arco-tabs-nav-tab) {
+    justify-content: flex-start !important;
+  }
+}
+</style>
+
+<style>
+/* Global overrides for Arco Design modals that are teleported to the body */
+@media (max-width: 768px) {
+  body .arco-modal {
+    width: 95% !important;
+    max-width: calc(100vw - 20px) !important;
+    margin: 10px auto !important;
+  }
+  body .arco-modal-body {
+    padding: 16px 12px !important;
+  }
+  body .arco-modal-header {
+    padding: 12px 16px !important;
+    height: auto !important;
+  }
+  body .arco-form-item-wrapper {
+    width: 100% !important;
+  }
+  body .arco-input-group {
+    display: flex !important;
+    flex-direction: column !important;
+    width: 100% !important;
+    gap: 8px !important;
+  }
+  body .arco-input-group > .arco-input-wrapper {
+    width: 100% !important;
+  }
+  body .arco-input-group > button {
+    width: 100% !important;
+  }
+  body .arco-space {
+    flex-wrap: wrap !important;
+    width: 100% !important;
+  }
+}
 </style>

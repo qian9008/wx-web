@@ -103,6 +103,7 @@ import { useAccountStore } from '@/store/account';
 import { useRouter } from 'vue-router';
 import { Message } from '@arco-design/web-vue';
 import { adminApi } from '@/api/modules/admin';
+import { loginApi } from '@/api/modules/im';
 import { 
   IconCheckCircleFill, IconApps, IconRight, IconUser, IconLeft 
 } from '@arco-design/web-vue/es/icon';
@@ -195,6 +196,25 @@ const fetchAuthList = async () => {
     const res: any = await adminApi.getAuthKey();
     if (Array.isArray(res)) {
       authList.value = res;
+      
+      // 🚀 修复 Vue 响应式：必须循环 `authList.value`（代理对象）而非 raw `res`，这样异步修改 status 才能触发 Vue 的 DOM 更新！
+      authList.value.forEach(async (auth: any) => {
+        try {
+          const statusRes: any = await loginApi.getOnlineStatus(auth.license);
+          const data = statusRes?.Data || statusRes;
+          if (data) {
+            // loginState === 1 代表在线
+            auth.status = data.loginState === 1 ? 1 : 0;
+            // 顺便补全最新的微信昵称
+            if (data.nickname || data.Nickname) {
+              auth.nick_name = data.nickname || data.Nickname;
+            }
+          }
+        } catch (err) {
+          console.warn(`获取授权码 ${auth.license} 实时状态失败:`, err);
+          auth.status = 0; // 查询失败则默认为离线
+        }
+      });
     } else {
       authList.value = [];
     }
@@ -241,7 +261,8 @@ const logoutAdmin = () => {
 
 /* 磨砂玻璃卡片 */
 .glass-card {
-  width: 440px;
+  width: 100%;
+  max-width: 440px;
   background: rgba(255, 255, 255, 0.03);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
@@ -527,5 +548,14 @@ const logoutAdmin = () => {
 .back-btn:hover {
   background: rgba(255, 255, 255, 0.05);
   color: #e5e6eb;
+}
+
+@media (max-width: 480px) {
+  .glass-card {
+    padding: 24px 20px;
+  }
+  .glow-text {
+    font-size: 24px;
+  }
 }
 </style>
