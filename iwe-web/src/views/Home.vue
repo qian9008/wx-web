@@ -8,10 +8,10 @@
           :key="acc.uuid || index"
           class="account-item"
           :class="{
-            active: accountStore.activeAccountUuid === acc.uuid,
+            active: accountStore.activeAccountUuid === acc.uuid || pendingAccountUuid === acc.uuid,
             offline: acc.status === 'offline'
           }"
-          @click="accountStore.activeAccountUuid = acc.uuid"
+          @click="handleSwitchAccount(acc.uuid)"
         >
           <a-popover position="right" trigger="click" :content-style="{ padding: '0' }">
             <a-tooltip :content="acc.nickname" position="right">
@@ -102,7 +102,7 @@
       </div>
       
       <div class="scroll-area">
-        <template v-if="activeTab === 'chat'">
+        <div v-show="activeTab === 'chat'">
           <div 
             v-for="conv in currentConversations" 
             :key="conv.wxid"
@@ -112,7 +112,7 @@
           >
             <a-badge :count="conv.unread" :dot="false" class="avatar-badge">
               <a-avatar :size="42" shape="square" :style="{ backgroundColor: '#ffb400' }">
-                <img v-if="getConvAvatar(conv)" :src="getConvAvatar(conv)" />
+                <img v-if="getConvAvatar(conv)" :src="getConvAvatar(conv)" loading="lazy" />
                 <template v-else>{{ getConvName(conv) ? getConvName(conv)[0] : 'C' }}</template>
               </a-avatar>
             </a-badge>
@@ -124,9 +124,9 @@
               <div class="desc">{{ formatText(conv.lastMsg) }}</div>
             </div>
           </div>
-        </template>
+        </div>
         
-        <template v-else>
+        <div v-show="activeTab === 'contact'">
           <div class="contact-tabs">
             <div 
               class="tab-item" 
@@ -144,26 +144,72 @@
               @click="contactCategory = 'official'"
             >公众号({{ sortedContacts.official.length }})</div>
           </div>
-          <div 
-            v-for="contact in displayContactList" 
-            :key="getContactId(contact)"
-            class="conv-item"
-            :class="{ active: chatStore.activeId === getContactId(contact) }"
-            @click="handleSelectContact(contact)"
-            v-lazy-contact="getContactId(contact)"
-          >
-            <a-avatar :size="42" shape="square" :style="{ backgroundColor: '#337ecc' }">
-              <img v-if="getContactAvatar(contact)" :src="accountStore.avatarBlobMap[getContactAvatar(contact)] || getContactAvatar(contact)" />
-              <template v-else>{{ getContactName(contact)[0] }}</template>
-            </a-avatar>
-            <div class="info">
-              <div class="title">
-                <span class="name">{{ getContactName(contact) }}</span>
+          <div v-show="contactCategory === 'friend'">
+            <div 
+              v-for="contact in sortedContacts.friend" 
+              :key="getContactId(contact)"
+              class="conv-item"
+              :class="{ active: chatStore.activeId === getContactId(contact) }"
+              @click="handleSelectContact(contact)"
+              v-lazy-contact="getContactId(contact)"
+            >
+              <a-avatar :size="42" shape="square" :style="{ backgroundColor: '#337ecc' }">
+                <img v-if="getContactAvatar(contact)" :src="accountStore.avatarBlobMap[getContactAvatar(contact)] || getContactAvatar(contact)" loading="lazy" />
+                <template v-else>{{ getContactName(contact)[0] }}</template>
+              </a-avatar>
+              <div class="info">
+                <div class="title">
+                  <span class="name">{{ getContactName(contact) }}</span>
+                </div>
+                <div class="desc">{{ getContactId(contact) }}</div>
               </div>
-              <div class="desc">{{ getContactId(contact) }}</div>
             </div>
           </div>
-        </template>
+
+          <div v-show="contactCategory === 'room'">
+            <div 
+              v-for="contact in sortedContacts.room" 
+              :key="getContactId(contact)"
+              class="conv-item"
+              :class="{ active: chatStore.activeId === getContactId(contact) }"
+              @click="handleSelectContact(contact)"
+              v-lazy-contact="getContactId(contact)"
+            >
+              <a-avatar :size="42" shape="square" :style="{ backgroundColor: '#337ecc' }">
+                <img v-if="getContactAvatar(contact)" :src="accountStore.avatarBlobMap[getContactAvatar(contact)] || getContactAvatar(contact)" loading="lazy" />
+                <template v-else>{{ getContactName(contact)[0] }}</template>
+              </a-avatar>
+              <div class="info">
+                <div class="title">
+                  <span class="name">{{ getContactName(contact) }}</span>
+                </div>
+                <div class="desc">{{ getContactId(contact) }}</div>
+              </div>
+            </div>
+          </div>
+
+          <div v-show="contactCategory === 'official'">
+            <div 
+              v-for="contact in sortedContacts.official" 
+              :key="getContactId(contact)"
+              class="conv-item"
+              :class="{ active: chatStore.activeId === getContactId(contact) }"
+              @click="handleSelectContact(contact)"
+              v-lazy-contact="getContactId(contact)"
+            >
+              <a-avatar :size="42" shape="square" :style="{ backgroundColor: '#337ecc' }">
+                <img v-if="getContactAvatar(contact)" :src="accountStore.avatarBlobMap[getContactAvatar(contact)] || getContactAvatar(contact)" loading="lazy" />
+                <template v-else>{{ getContactName(contact)[0] }}</template>
+              </a-avatar>
+              <div class="info">
+                <div class="title">
+                  <span class="name">{{ getContactName(contact) }}</span>
+                </div>
+                <div class="desc">{{ getContactId(contact) }}</div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -182,12 +228,12 @@
             :class="{ self: msg.isSelf }"
           >
             <a-avatar :size="36" shape="square">
-              <img v-if="msg.isSelf ? currentAccountAvatar : currentPartnerAvatar" :src="msg.isSelf ? currentAccountAvatar : currentPartnerAvatar" />
+              <img v-if="msg.isSelf ? currentAccountAvatar : currentPartnerAvatar" :src="msg.isSelf ? currentAccountAvatar : currentPartnerAvatar" loading="lazy" />
               <template v-else>{{ (msg.isSelf ? 'Me' : currentChatPartnerName[0]) }}</template>
             </a-avatar>
             <div class="msg-bubble">
               <div v-if="msg.type === 'image' && msg.imageUrl" class="content image-content">
-                <img :src="msg.imageUrl" alt="图片" style="max-width: 200px; max-height: 200px; border-radius: 4px;" />
+                <img :src="msg.imageUrl" alt="图片" style="max-width: 200px; max-height: 200px; border-radius: 4px;" loading="lazy" />
               </div>
               <div v-else class="content">{{ msg.content }}</div>
               <div v-if="msg.isRevoked" class="revoked-tag">消息已撤回</div>
@@ -480,6 +526,10 @@
                   @update:model-value="(val: any) => accountStore.updateAvatarConfig({ cacheEnabled: val })" 
                 />
               </a-form-item>
+              <a-divider>数据获取</a-divider>
+              <a-form-item label="好友列表" help="调用 /friend/GetFriendList 获取最新好友列表">
+                <a-button type="primary" size="small" @click="handleGetFriendList" :loading="friendListLoading">获取好友列表</a-button>
+              </a-form-item>
             </a-form>
           </a-tab-pane>
         </a-tabs>
@@ -513,6 +563,19 @@ const loginVisible = ref(false);
 const adminVisible = ref(false);
 const activeAdminTab = ref('1');
 const adminPanelContext = ref<'global' | 'personal'>('global');
+
+const pendingAccountUuid = ref('');
+const handleSwitchAccount = (uuid: string) => {
+  if (accountStore.activeAccountUuid === uuid) return;
+  pendingAccountUuid.value = uuid;
+  // 让 Vue 先完成当前事件循环的渲染（更新选中态的高亮）
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      accountStore.activeAccountUuid = uuid;
+      pendingAccountUuid.value = '';
+    });
+  });
+};
 
 const handleOpenGlobalSettings = () => {
   adminPanelContext.value = 'global';
@@ -638,6 +701,40 @@ const handleManualSyncContacts = async () => {
 
 const activeTab = ref('chat');
 const contactLoading = ref(false);
+const friendListLoading = ref(false);
+
+const handleGetFriendList = async () => {
+  const uuid = accountStore.activeAccountUuid;
+  const acc = accountStore.accounts.find(a => a.uuid === uuid);
+  if (!acc || !uuid) return Message.warning('请先选择活跃账号');
+  
+  try {
+    friendListLoading.value = true;
+    Message.info('开始获取好友列表...');
+    const res = await messageApi.getFriendList(acc.sessionKey);
+    console.log('[GetFriendList]', res);
+    
+    const friendData = res.Data || res;
+    const friendList = friendData.friendList || [];
+    let updatedCount = 0;
+    
+    if (friendList.length > 0) {
+      for (const f of friendList) {
+        const wxid = f.userName?.str || f.UserName?.str || f.wxid || f.userName || f.UserName;
+        if (wxid) {
+          await accountStore.updateContact(wxid, f, uuid);
+          updatedCount++;
+        }
+      }
+    }
+    
+    Message.success(`好友列表获取成功，已并入 ${updatedCount} 个联系人`);
+  } catch (err: any) {
+    Message.error('获取失败: ' + err.message);
+  } finally {
+    friendListLoading.value = false;
+  }
+};
 const msgFlow = ref<HTMLElement | null>(null);
 
 const cacheStats = ref({ 
@@ -675,8 +772,10 @@ const sortedContacts = computed(() => {
     }
   });
 
-  // 排序：按名称
-  const sortFn = (a: any, b: any) => getContactName(a).localeCompare(getContactName(b), 'zh-CN');
+  // 使用 Intl.Collator 替代 localeCompare，性能可提升几倍甚至十倍
+  const collator = new Intl.Collator('zh-CN');
+  const sortFn = (a: any, b: any) => collator.compare(getContactName(a), getContactName(b));
+  
   categories.friend.sort(sortFn);
   categories.room.sort(sortFn);
   categories.official.sort(sortFn);
@@ -768,12 +867,8 @@ const handleSelectChat = async (wxid: string) => {
   chatStore.activeId = wxid;
   const accountUuid = accountStore.activeAccountUuid;
   await chatStore.loadHistory(accountUuid, wxid);
-  // 清除未读
-  const list = chatStore.accountConversations[accountUuid];
-  if (list) {
-    const conv = list.find(c => c.wxid === wxid);
-    if (conv) conv.unread = 0;
-  }
+  // 清除未读并持久化到本地缓存
+  await chatStore.clearUnread(accountUuid, wxid);
 };
 
 const handleSwitchContact = async () => {
@@ -892,8 +987,6 @@ const getContactAvatar = (c: any) => {
   const rawUrl = typeof url === 'string' ? url.trim().replace(/`/g, '') : '';
   if (!rawUrl) return '';
   
-  // 触发异步加载/从内存缓存读取
-  accountStore.getAvatarUrl(rawUrl); // 确保触发下载
   return accountStore.avatarBlobMap[rawUrl] || rawUrl;
 };
 
@@ -929,16 +1022,7 @@ const getConvAvatar = (conv: any) => {
   return accountStore.avatarBlobMap[rawUrl] || rawUrl;
 };
 
-// 监听 contactMap 变化，自动触发头像下载
-watch(() => accountStore.contactMap, (newMap) => {
-  Object.values(newMap).forEach(c => {
-    const url = c.smallHeadImgUrl || c.SmallHeadImgUrl || c.headImgUrl || c.HeadImgUrl || c.avatar || '';
-    if (typeof url === 'string' && url.trim()) {
-      accountStore.getAvatarUrl(url.trim().replace(/`/g, ''));
-    }
-  });
-}, { immediate: true, deep: true });
-
+// (watch removed to prevent eager avatar fetching for all contacts)
 const formatTime = (t: number) => t ? dayjs(t * 1000).format('HH:mm') : '';
 const formatText = (text: any) => {
   if (typeof text === 'object') return text.str || text.Str || JSON.stringify(text);
@@ -961,6 +1045,17 @@ const lazyObserver = new IntersectionObserver((entries) => {
       const wxid = entry.target.getAttribute('data-wxid');
       if (wxid) {
         accountStore.enqueueContactDetails(wxid);
+        
+        // 懒加载头像：只有元素滚动到可视区域时，才主动下载并缓存头像
+        const contact = accountStore.contactMap[wxid];
+        if (contact) {
+          const url = contact.smallHeadImgUrl || contact.SmallHeadImgUrl || contact.headImgUrl || contact.HeadImgUrl || contact.avatar || '';
+          const rawUrl = typeof url === 'string' ? url.trim().replace(/`/g, '') : '';
+          if (rawUrl) {
+            accountStore.getAvatarUrl(rawUrl);
+          }
+        }
+
         // 触发后停止监听该元素
         lazyObserver.unobserve(entry.target);
       }
@@ -1084,7 +1179,14 @@ onMounted(async () => {
 .chat-list { width: 280px; background: #232323; border-right: 1px solid #2e2e2e; }
 .list-search { padding: 15px; }
 .scroll-area { flex: 1; overflow-y: auto; }
-.conv-item { display: flex; padding: 12px 15px; cursor: pointer; border-bottom: 1px solid #2e2e2e; }
+.conv-item { 
+  display: flex; 
+  padding: 12px 15px; 
+  cursor: pointer; 
+  border-bottom: 1px solid #2e2e2e; 
+  content-visibility: auto;
+  contain-intrinsic-size: 0 67px;
+}
 .conv-item.active { background: #333333; }
 .conv-item .info { flex: 1; margin-left: 12px; overflow: hidden; }
 .conv-item .title { display: flex; justify-content: space-between; margin-bottom: 4px; }

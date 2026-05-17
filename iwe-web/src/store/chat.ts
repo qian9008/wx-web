@@ -104,8 +104,6 @@ export const useChatStore = defineStore('chat', {
         return;
       }
 
-      if (isDebug('socket')) console.log(`[ChatStore] 消息归类判定: myWxid=${myWxid}, partnerId=${partnerId}`);
-
       // 1. 持久化消息到 DB
       const msgWithPartner = { ...msg, partnerId };
       await contactCache.saveMessage(userName, msgWithPartner);
@@ -123,12 +121,10 @@ export const useChatStore = defineStore('chat', {
 
       // 强制触发响应式更新
       this.accountMessages[userName] = messagesForAccount;
-      if (isDebug('socket')) console.log(`[ChatStore] 内存更新完成，当前 ${partnerId} 会话消息数: ${messagesForAccount[partnerId].length}`);
 
       // 3. 更新会话列表镜像 (upsert)
       try {
         await this.updateConversation(userName, partnerId, msg);
-        if (isDebug('socket')) console.log(`[ChatStore] 会话列表已更新: ${partnerId}`);
       } catch (err) {
         console.error(`[ChatStore] updateConversation 异常:`, err);
       }
@@ -385,6 +381,18 @@ export const useChatStore = defineStore('chat', {
       }
 
       console.log(`[ChatStore] 数据已从 ${oldUuid} 迁移至 ${newUuid}`);
+    },
+
+    // 独立清理并持久化未读数
+    async clearUnread(userName: string, wxid: string) {
+      if (!this.accountConversations[userName]) return;
+      const list = [...this.accountConversations[userName]];
+      const idx = list.findIndex(c => c.wxid === wxid);
+      if (idx > -1) {
+        list[idx] = { ...list[idx], unread: 0 };
+        this.accountConversations[userName] = list;
+        await contactCache.saveConversation(userName, JSON.parse(JSON.stringify(list[idx])));
+      }
     }
   }
 });

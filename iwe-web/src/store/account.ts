@@ -396,8 +396,8 @@ export const useAccountStore = defineStore('account', {
         }
 
         // 第二阶段：分页补漏
-        let currentContactSeq = 0;
-        let currentChatRoomSeq = 0;
+        let currentContactSeq = 1;
+        let currentChatRoomSeq = 1;
         let hasMore = true;
         let newWxids: string[] = [];
         let safetyCounter = 0;
@@ -431,12 +431,14 @@ export const useAccountStore = defineStore('account', {
           }
 
           // 2. 提取并更新版本号指针 (大数字)
-          const nextContactSeq = contactListData.currentWxcontactSeq || contactListData.CurrentWxcontactSeq || 0;
-          const nextChatRoomSeq = contactListData.currentChatRoomContactSeq || contactListData.CurrentChatRoomContactSeq || 0;
+          const nextContactSeq = data.currentWxcontactSeq || data.CurrentWxcontactSeq || contactListData.currentWxcontactSeq || contactListData.CurrentWxcontactSeq || 0;
+          const nextChatRoomSeq = data.currentChatRoomContactSeq || data.CurrentChatRoomContactSeq || contactListData.currentChatRoomContactSeq || contactListData.CurrentChatRoomContactSeq || 0;
           
           // 3. 核心：通过 continueFlag 判断是否继续
-          const continueFlag = contactListData.continueFlag !== undefined ? contactListData.continueFlag : 
-                               (contactListData.ContinueFlag !== undefined ? contactListData.ContinueFlag : 0);
+          const continueFlag = data.continueFlag !== undefined ? data.continueFlag :
+                               (data.ContinueFlag !== undefined ? data.ContinueFlag :
+                               (contactListData.continueFlag !== undefined ? contactListData.continueFlag : 
+                               (contactListData.ContinueFlag !== undefined ? contactListData.ContinueFlag : 0)));
           
           console.log(`[AccountStore] GetContactList 翻页: version(${currentContactSeq} -> ${nextContactSeq}), continueFlag: ${continueFlag}, 本页获取: ${userList.length}`);
 
@@ -499,7 +501,7 @@ export const useAccountStore = defineStore('account', {
       if (this.isProcessingQueue || this.detailsQueue.length === 0) return;
       this.isProcessingQueue = true;
 
-      const batchSize = 50;
+      const batchSize = 20;
       // 修正：从活跃账号获取 key，如果没有则回退
       const activeAcc = this.accounts.find(a => a.uuid === this.activeAccountUuid);
       const key = activeAcc?.sessionKey || this.tokenKey;
@@ -516,8 +518,10 @@ export const useAccountStore = defineStore('account', {
           if (Array.isArray(details)) detailList = details;
           else if (details?.Data && Array.isArray(details.Data)) detailList = details.Data;
           else if (details?.Data?.ContactList && Array.isArray(details.Data.ContactList)) detailList = details.Data.ContactList;
+          else if (details?.Data?.contactList && Array.isArray(details.Data.contactList)) detailList = details.Data.contactList;
           else if (details?.Data?.List && Array.isArray(details.Data.List)) detailList = details.Data.List;
           else if (details?.ContactList && Array.isArray(details.ContactList)) detailList = details.ContactList;
+          else if (details?.contactList && Array.isArray(details.contactList)) detailList = details.contactList;
           
           if (detailList.length === 0 && details?.Code !== 0) {
             console.warn(`[AccountStore] 补全队列批次请求未返回有效数组，可能包含无效ID或触发限流:`, details);
