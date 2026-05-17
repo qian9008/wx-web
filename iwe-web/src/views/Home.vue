@@ -757,12 +757,28 @@ const handleAddAccount = () => {
 };
 
 const handleManualLogin = () => {
-  // 如果已经有个人 IM 密钥，直接使用，不需要再弹窗手动输入授权码
+  // 1. 如果是个人模式，直接使用个人授权码
   if (accountStore.tokenKey) {
     pendingSessionKey.value = accountStore.tokenKey.trim();
     loginVisible.value = true;
+    return;
+  }
+  
+  // 2. 如果是管理员模式，并且当前选中了一个账号（包括离线账号），直接复用其密钥，不弹窗
+  const activeAcc = accountStore.accounts.find(a => a.uuid === accountStore.activeAccountUuid);
+  if (activeAcc && activeAcc.sessionKey) {
+    pendingSessionKey.value = activeAcc.sessionKey.trim();
+    loginVisible.value = true;
+    return;
+  }
+
+  // 3. 自动分配空闲槽位密钥，避免弹窗
+  const idleAccount = accountStore.accounts.find(a => a.status === 'offline' && a.sessionKey);
+  if (idleAccount) {
+    pendingSessionKey.value = idleAccount.sessionKey.trim();
+    loginVisible.value = true;
   } else {
-    // 兜底处理：若无个人密钥，则仍旧提示输入授权码
+    // 4. 终极兜底：没有任何活跃账号与槽位密钥时，才弹窗请求输入
     const key = prompt('请输入您的授权码（Auth Code）', '');
     if (key !== null) {
       pendingSessionKey.value = key.trim();
