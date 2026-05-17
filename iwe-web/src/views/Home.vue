@@ -13,52 +13,16 @@
           }"
           @click="handleSwitchAccount(acc.uuid)"
         >
-          <a-popover position="right" trigger="click" :content-style="{ padding: '0' }">
-            <a-tooltip :content="acc.nickname" position="right">
+          <a-tooltip :content="`${acc.nickname} (${acc.status === 'online' ? '在线' : '离线'})`" position="right">
+            <a-badge :status="acc.status === 'online' ? 'success' : 'normal'" :offset="[-5, 40]">
               <a-avatar :size="48" shape="square" :style="{ backgroundColor: '#333' }">
-                <img v-if="acc.avatar" :src="acc.avatar" :style="acc.status === 'offline' ? { filter: 'grayscale(100%)', opacity: '0.6' } : {}" />
+                <img v-if="getAccountAvatar(acc)" :src="getAccountAvatar(acc)" referrerpolicy="no-referrer" :style="acc.status === 'offline' ? { filter: 'grayscale(100%)', opacity: '0.6' } : {}" />
                 <template v-else>
                   <span :style="acc.status === 'offline' ? { color: '#666' } : {}">{{ acc.nickname[0] }}</span>
                 </template>
               </a-avatar>
-            </a-tooltip>
-            <template #content>
-              <div class="account-status-panel">
-                <div class="panel-header">
-                  <span class="nickname">{{ acc.nickname }}</span>
-                  <a-tag size="mini" :color="acc.status === 'online' ? 'green' : 'gray'">
-                    {{ acc.status === 'online' ? '在线' : '离线' }}
-                  </a-tag>
-                </div>
-                
-                <div class="status-actions">
-                  <a-button size="mini" type="outline" @click="handleAccountStatusAction(acc, 'status')">
-                    <template #icon><icon-check-circle /></template>在线查询
-                  </a-button>
-                  <a-button size="mini" type="outline" status="success" @click="handleAccountStatusAction(acc, 'wakeup')">
-                    <template #icon><icon-thunderbolt /></template>唤醒登录
-                  </a-button>
-                  <a-popover position="right" trigger="click">
-                    <a-button size="mini" type="outline" status="warning">
-                      <template #icon><icon-safe /></template>验证码
-                    </a-button>
-                    <template #content>
-                      <div style="padding: 10px; width: 220px;">
-                        <a-input-group>
-                          <a-input v-model="verifyMobile" placeholder="手机号" size="small" />
-                          <a-button type="primary" size="small" @click="handleAccountVerifyCode(acc)">发送</a-button>
-                        </a-input-group>
-                      </div>
-                    </template>
-                  </a-popover>
-                </div>
-
-                <div v-if="accountResults[acc.uuid]" class="status-result">
-                  <pre>{{ accountResults[acc.uuid] }}</pre>
-                </div>
-              </div>
-            </template>
-          </a-popover>
+            </a-badge>
+          </a-tooltip>
         </div>
         
         <div class="add-account-btn" @click="handleAddAccount">
@@ -90,8 +54,19 @@
         <icon-user :size="24" />
       </div>
 
+      <div class="nav-item status-indicator" style="cursor: default; margin-top: auto; margin-bottom: 10px;">
+        <a-tooltip :content="`当前状态: ${activeAccountOnlineStatus}`" position="right">
+          <icon-check-circle v-if="activeAccountOnlineStatus === '在线'" :size="24" style="color: #00b42a;" />
+          <icon-close-circle v-else :size="24" style="color: #f53f3f;" />
+        </a-tooltip>
+      </div>
+
       <div class="nav-item settings-item" @click="handleOpenPersonalSettings">
         <icon-settings :size="24" />
+      </div>
+
+      <div class="nav-item" style="margin-top: 10px;" @click="handleManualLogin">
+        <icon-plus :size="24" />
       </div>
     </div>
 
@@ -154,7 +129,7 @@
               v-lazy-contact="getContactId(contact)"
             >
               <a-avatar :size="42" shape="square" :style="{ backgroundColor: '#337ecc' }">
-                <img v-if="getContactAvatar(contact)" :src="accountStore.avatarBlobMap[getContactAvatar(contact)] || getContactAvatar(contact)" loading="lazy" />
+                <img v-if="getContactAvatar(contact)" :src="accountStore.avatarBlobMap[getContactAvatar(contact)] || getContactAvatar(contact)" referrerpolicy="no-referrer" loading="lazy" />
                 <template v-else>{{ getContactName(contact)[0] }}</template>
               </a-avatar>
               <div class="info">
@@ -176,7 +151,7 @@
               v-lazy-contact="getContactId(contact)"
             >
               <a-avatar :size="42" shape="square" :style="{ backgroundColor: '#337ecc' }">
-                <img v-if="getContactAvatar(contact)" :src="accountStore.avatarBlobMap[getContactAvatar(contact)] || getContactAvatar(contact)" loading="lazy" />
+                <img v-if="getContactAvatar(contact)" :src="accountStore.avatarBlobMap[getContactAvatar(contact)] || getContactAvatar(contact)" referrerpolicy="no-referrer" loading="lazy" />
                 <template v-else>{{ getContactName(contact)[0] }}</template>
               </a-avatar>
               <div class="info">
@@ -198,7 +173,7 @@
               v-lazy-contact="getContactId(contact)"
             >
               <a-avatar :size="42" shape="square" :style="{ backgroundColor: '#337ecc' }">
-                <img v-if="getContactAvatar(contact)" :src="accountStore.avatarBlobMap[getContactAvatar(contact)] || getContactAvatar(contact)" loading="lazy" />
+                <img v-if="getContactAvatar(contact)" :src="accountStore.avatarBlobMap[getContactAvatar(contact)] || getContactAvatar(contact)" referrerpolicy="no-referrer" loading="lazy" />
                 <template v-else>{{ getContactName(contact)[0] }}</template>
               </a-avatar>
               <div class="info">
@@ -228,7 +203,7 @@
             :class="{ self: msg.isSelf }"
           >
             <a-avatar :size="36" shape="square">
-              <img v-if="msg.isSelf ? currentAccountAvatar : currentPartnerAvatar" :src="msg.isSelf ? currentAccountAvatar : currentPartnerAvatar" loading="lazy" />
+              <img v-if="msg.isSelf ? currentAccountAvatar : currentPartnerAvatar" :src="msg.isSelf ? currentAccountAvatar : currentPartnerAvatar" referrerpolicy="no-referrer" loading="lazy" />
               <template v-else>{{ (msg.isSelf ? 'Me' : currentChatPartnerName[0]) }}</template>
             </a-avatar>
             <div class="msg-bubble">
@@ -530,6 +505,32 @@
               <a-form-item label="好友列表" help="调用 /friend/GetFriendList 获取最新好友列表">
                 <a-button type="primary" size="small" @click="handleGetFriendList" :loading="friendListLoading">获取好友列表</a-button>
               </a-form-item>
+              <a-divider>高级操作</a-divider>
+              <a-form-item label="在线状态">
+                <a-space>
+                  <a-button size="small" type="outline" @click="handleAccountStatusActionForCurrent('status')">
+                    <template #icon><icon-check-circle /></template>在线查询
+                  </a-button>
+                  <a-button size="small" type="outline" status="success" @click="handleAccountStatusActionForCurrent('wakeup')">
+                    <template #icon><icon-thunderbolt /></template>唤醒登录
+                  </a-button>
+                </a-space>
+              </a-form-item>
+              <a-form-item label="绑定手机验证码">
+                <a-input-group>
+                  <a-input v-model="verifyMobile" placeholder="手机号" size="small" style="width: 200px" />
+                  <a-button type="primary" size="small" @click="handleAccountVerifyCodeForCurrent">发送验证码</a-button>
+                </a-input-group>
+              </a-form-item>
+              <a-form-item label="环境数据" help="提取当前设备用于免验登录的 62 数据">
+                <a-button type="outline" size="small" status="warning" @click="handleExtract62DataForCurrent" :loading="extract62Loading">提取 62 数据</a-button>
+                <div v-if="extracted62Data" style="margin-top: 10px; width: 100%;">
+                  <a-textarea v-model="extracted62Data" :auto-size="{minRows: 2, maxRows: 6}" readonly />
+                </div>
+              </a-form-item>
+              <div v-if="currentAccountResult" style="margin-top: 10px;">
+                <pre class="status-result">{{ currentAccountResult }}</pre>
+              </div>
             </a-form>
           </a-tab-pane>
         </a-tabs>
@@ -539,7 +540,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, watch, nextTick } from 'vue';
+import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
 import { useAccountStore } from '@/store/account';
 import { useChatStore } from '@/store/chat';
 import { socketManager } from '@/utils/socketManager';
@@ -549,7 +550,7 @@ import { Message } from '@arco-design/web-vue';
 import { 
   IconPlus, IconMessage, IconUser, IconSettings, 
   IconFaceSmileFill, IconFolder, IconImage, IconTool,
-  IconThunderbolt, IconCheckCircle, IconSafe
+  IconThunderbolt, IconCheckCircle, IconSafe, IconCloseCircle
 } from '@arco-design/web-vue/es/icon';
 import { contactCache } from '@/utils/contactCache';
 import Login from './Login.vue';
@@ -565,6 +566,11 @@ const activeAdminTab = ref('1');
 const adminPanelContext = ref<'global' | 'personal'>('global');
 
 const pendingAccountUuid = ref('');
+const activeAccountOnlineStatus = computed(() => {
+  const acc = accountStore.accounts.find(a => a.uuid === accountStore.activeAccountUuid);
+  return acc?.status === 'online' ? '在线' : '离线';
+});
+
 const handleSwitchAccount = (uuid: string) => {
   if (accountStore.activeAccountUuid === uuid) return;
   pendingAccountUuid.value = uuid;
@@ -592,6 +598,7 @@ const handleOpenPersonalSettings = () => {
 const pendingSessionKey = ref('');
 const verifyMobile = ref('');
 const accountResults = ref<Record<string, any>>({});
+const currentAccountResult = ref('');
 
 // 表单数据绑定
 const baseConfigForm = reactive({
@@ -637,7 +644,10 @@ const handleAdminAction = async (type: string) => {
   }
 };
 
-const handleAccountStatusAction = async (acc: any, action: string) => {
+const handleAccountStatusActionForCurrent = async (action: string) => {
+  const uuid = accountStore.activeAccountUuid;
+  const acc = accountStore.accounts.find(a => a.uuid === uuid);
+  if (!acc || !uuid) return Message.warning('请先选择活跃账号');
   try {
     let res: any;
     if (action === 'status') {
@@ -646,17 +656,20 @@ const handleAccountStatusAction = async (acc: any, action: string) => {
       res = await loginApi.wakeUpLogin(acc.sessionKey);
       Message.success('唤醒指令已发送');
     }
-    accountResults.value[acc.uuid] = JSON.stringify(res, null, 2);
+    currentAccountResult.value = JSON.stringify(res, null, 2);
   } catch (err: any) {
-    accountResults.value[acc.uuid] = `Error: ${err.message || err}`;
+    currentAccountResult.value = `Error: ${err.message || err}`;
   }
 };
 
-const handleAccountVerifyCode = async (acc: any) => {
+const handleAccountVerifyCodeForCurrent = async () => {
+  const uuid = accountStore.activeAccountUuid;
+  const acc = accountStore.accounts.find(a => a.uuid === uuid);
+  if (!acc || !uuid) return Message.warning('请先选择活跃账号');
   if (!verifyMobile.value) return Message.warning('请输入手机号');
   try {
     const res = await loginApi.getVerifyCode(acc.sessionKey, verifyMobile.value);
-    accountResults.value[acc.uuid] = JSON.stringify(res, null, 2);
+    currentAccountResult.value = JSON.stringify(res, null, 2);
     Message.success('验证码请求已发送');
   } catch (err: any) {
     Message.error(err.message || '发送失败');
@@ -674,6 +687,15 @@ const handleAddAccount = () => {
     console.log('[Home] 无空闲槽位，将尝试创建新账号');
   }
   loginVisible.value = true;
+};
+
+const handleManualLogin = () => {
+  // 手动授权码进入登录
+  const key = prompt('请输入您的授权码（Auth Code）', '');
+  if (key !== null) {
+    pendingSessionKey.value = key.trim();
+    loginVisible.value = true;
+  }
 };
 
 const handleLoginSuccess = () => {
@@ -702,6 +724,28 @@ const handleManualSyncContacts = async () => {
 const activeTab = ref('chat');
 const contactLoading = ref(false);
 const friendListLoading = ref(false);
+const extract62Loading = ref(false);
+const extracted62Data = ref('');
+
+const handleExtract62DataForCurrent = async () => {
+  const uuid = accountStore.activeAccountUuid;
+  const acc = accountStore.accounts.find(a => a.uuid === uuid);
+  if (!acc || !uuid) return Message.warning('请先选择活跃账号');
+  
+  try {
+    extract62Loading.value = true;
+    Message.info('开始提取62数据...');
+    const res: any = await loginApi.get62Data(acc.sessionKey);
+    console.log('[Get62Data]', res);
+    
+    extracted62Data.value = res.Data || res;
+    Message.success('62数据提取成功');
+  } catch (err: any) {
+    Message.error('提取失败: ' + err.message);
+  } finally {
+    extract62Loading.value = false;
+  }
+};
 
 const handleGetFriendList = async () => {
   const uuid = accountStore.activeAccountUuid;
@@ -830,12 +874,17 @@ const currentChatPartnerName = computed(() => {
 
 const currentAccountAvatar = computed(() => {
   const acc = accountStore.accounts.find(a => a.uuid === accountStore.activeAccountUuid);
-  return acc?.avatar || '';
+  if (!acc) return '';
+  return getAccountAvatar(acc);
 });
 
 const currentPartnerAvatar = computed(() => {
   const detail = accountStore.contactMap[chatStore.activeId];
-  return detail ? getContactAvatar(detail) : '';
+  if (detail) {
+    const avatar = getContactAvatar(detail);
+    if (avatar) return accountStore.avatarBlobMap[avatar] || avatar;
+  }
+  return '';
 });
 
 const scrollToBottom = async () => {
@@ -854,12 +903,6 @@ watch(() => accountStore.activeAccountUuid, async (newUuid) => {
       accountStore.loadContactsFromCache(userName),
       chatStore.loadConversations(userName)
     ]);
-    
-    // 获取对应的 license
-    const acc = accountStore.accounts.find(a => a.uuid === userName);
-    if (acc?.sessionKey) {
-      socketManager.registerAccount(userName, acc.sessionKey);
-    }
   }
 }, { immediate: true });
 
@@ -906,12 +949,14 @@ const handleSendMessage = async () => {
 };
 
 const loadCacheStats = async () => {
+  const uuid = accountStore.activeAccountUuid && accountStore.activeAccountUuid !== 'pending_login' ? accountStore.activeAccountUuid : undefined;
+  
   const [c, m, v, a, est, act, avt] = await Promise.all([
-    contactCache.getCount('contacts'),
-    contactCache.getCount('messages'),
-    contactCache.getCount('conversations'),
+    contactCache.getCount('contacts', uuid),
+    contactCache.getCount('messages', uuid),
+    contactCache.getCount('conversations', uuid),
     contactCache.getCount('avatars'),
-    contactCache.getEstimatedSize(),
+    contactCache.getEstimatedSize(uuid),
     contactCache.getActualSize(),
     contactCache.getAvatarCacheSize()
   ]);
@@ -948,14 +993,38 @@ const handleClearGroupMessages = async () => {
   };
  
   const handleClearStore = async (name: string) => {
-  await contactCache.clearStore(name);
-  Message.success(`已清空 ${name} 表`);
+  const uuid = accountStore.activeAccountUuid && accountStore.activeAccountUuid !== 'pending_login' ? accountStore.activeAccountUuid : undefined;
+
+  await contactCache.clearStore(name, uuid);
+  
+  // 同步清理内存
+  if (uuid) {
+    if (name === 'messages') {
+      chatStore.accountMessages[uuid] = {};
+    } else if (name === 'conversations') {
+      chatStore.accountConversations[uuid] = [];
+    } else if (name === 'contacts') {
+      accountStore.accountContactMaps[uuid] = {};
+    }
+  }
+
+  Message.success(`已清空 ${uuid ? '当前账号 ' : ''}${name} 表`);
   await loadCacheStats();
 };
 
 const handleClearCache = async () => {
-  await contactCache.clearAll();
-  Message.success('已清空所有本地数据');
+  const uuid = accountStore.activeAccountUuid && accountStore.activeAccountUuid !== 'pending_login' ? accountStore.activeAccountUuid : undefined;
+
+  await contactCache.clearAll(uuid);
+  
+  // 同步清理内存
+  if (uuid) {
+    chatStore.accountMessages[uuid] = {};
+    chatStore.accountConversations[uuid] = [];
+    accountStore.accountContactMaps[uuid] = {};
+  }
+
+  Message.success(`已清空${uuid ? '当前账号的' : '所有'}本地数据`);
   await loadCacheStats();
 };
 
@@ -988,6 +1057,21 @@ const getContactAvatar = (c: any) => {
   if (!rawUrl) return '';
   
   return accountStore.avatarBlobMap[rawUrl] || rawUrl;
+};
+
+// 账号头像：优先从联系人缓存取（已有本地 blob），回退到 acc.avatar
+const getAccountAvatar = (acc: any) => {
+  // 先查联系人缓存（联系人同步时已经把自己的头像缓存到本地了）
+  const contact = accountStore.contactMap[acc.uuid];
+  if (contact) {
+    const cached = getContactAvatar(contact);
+    if (cached) return cached;
+  }
+  // 回退到 acc.avatar（可能是 blob URL 或原始 URL）
+  if (acc.avatar) {
+    return accountStore.avatarBlobMap[acc.avatar] || acc.avatar;
+  }
+  return '';
 };
 
 const getConvName = (conv: any) => {
@@ -1074,11 +1158,16 @@ const vLazyContact = {
 };
 
 onMounted(async () => {
+  accountStore.startStatusPolling();
   document.body.setAttribute('arco-theme', 'dark');
   // 只要有管理密钥或授权码，就同步账号
   if (accountStore.adminKey || accountStore.tokenKey) {
     await accountStore.syncAccountsFromServer();
   }
+});
+
+onUnmounted(() => {
+  accountStore.stopStatusPolling();
 });
 </script>
 

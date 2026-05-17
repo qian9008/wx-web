@@ -129,3 +129,16 @@
 4. **渲染层防穿透 (数据回填与 UI 联动)**：
    - 彻底修复群聊、公众号及自身头像/昵称仅显示原始 `wxid` 的问题。在 `Home.vue` 中增设了 `getConvName` 和 `getConvAvatar`，实现了向 `contactMap` 及活跃账号本身的双向击穿。
    - `chatStore` 加载历史会话后，即使当时详情缺失，也能借助增量回查 `DB` 里的持久化昵称做到 “回写补漏 (Back-patch)”，真正实现会话列表所见即所得。
+
+### 2026-05-17 离线账号管理优化、头像防盗链及本地缓存深度复用
+1. **离线账户深度拦截与自动恢复**：
+   - 优化了账号状态检测流程，在 `account.ts` 中增强了 `checkSingleAccountStatus` 的返回类型为 `Promise<boolean>`。
+   - 彻底拦截了离线账号的 WebSocket 注册、最近会话拉取、以及联系人获取同步，规避了大量无效的网络流量。
+   - 修复了 `Home.vue` 切换高亮账号时直接无脑建立 Socket 的遗留缺陷，全权交由底层真实状态管控。
+   - 轮询监控系统 (`startStatusPolling`) 新增状态跃迁监测，若检测到账号状态由 `offline` 恢复到 `online`，将自动恢复该账号的 Socket 连接以及全量数据同步。
+2. **请求静默白名单机制**：
+   - 针对 30 秒自动状态轮询，在 Axios 拦截器中将 `/login/GetLoginStatus` 和 `/login/GetProfile` 纳入“静默处理”白名单，屏蔽在离线状态或后台偶发 300/500 业务报错时的 Message.error 弹窗，消除用户被反复骚扰的问题。
+3. **微信头像防盗链 (403 Forbidden) 突破与本地缓存复用**：
+   - 引入 `getAccountAvatar` 账号头像加载优化，在第一栏（账号列表）和聊天对话框（自身头像）中优先查 `contactMap` 获取早已由联系人/消息同步机制下载并存在本地的真实 Blob URL。
+   - 极大地拓宽了 `GetProfile` 解析时头像字段名的匹配范围，添加 `headImgUrl`, `HeadImgUrl`, `avatar` 等兼容。
+   - 在模板的所有头像 `<img>` 标签中加入了 `referrerpolicy="no-referrer"` 终极防盾牌，防止微信防盗链 Referer 阻碍头像渲染。

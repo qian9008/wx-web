@@ -51,7 +51,11 @@ service.interceptors.response.use(
       if (res.Code === 200 || res.Code === 0) {
         return res.Data !== undefined ? res.Data : res;
       } else {
-        Message.error(res.Text || '业务请求失败');
+        const url = response.config.url || '';
+        // 静默处理的接口，不弹出全局错误，交由业务自行 catch 处理
+        if (!url.includes('/login/GetLoginStatus') && !url.includes('/login/GetProfile')) {
+          Message.error(res.Text || '业务请求失败');
+        }
         return Promise.reject(res);
       }
     }

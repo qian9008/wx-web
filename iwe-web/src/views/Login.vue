@@ -19,16 +19,34 @@
           </div>
         </div>
       </a-tab-pane>
-      <a-tab-pane key="qrcode" title="旧版扫码">
+      <a-tab-pane key="qrcode" title="扫码登录">
         <div class="login-box">
-          <div v-if="loading" class="loading">
+          <div style="margin-bottom: 20px;">
+            <a-input v-model="authKey" placeholder="请输入或分配授权码 (可选)" style="width: 250px" allow-clear>
+              <template #prefix><icon-safe /></template>
+            </a-input>
+          </div>
+          
+          <div style="margin-bottom: 20px;">
+            <a-radio-group v-model="qrType" type="button">
+              <a-radio value="new">新版接口 (推荐)</a-radio>
+              <a-radio value="old">旧版接口</a-radio>
+            </a-radio-group>
+          </div>
+
+          <div v-if="!qrUrl && !loading" class="empty-state" style="padding: 20px 0;">
+            <icon-qrcode :size="48" style="color: #86909c; margin-bottom: 16px;" />
+            <p style="color: #86909c; margin-bottom: 20px;">点击下方按钮获取登录二维码</p>
+            <a-button type="primary" @click="fetchQrCode(qrType)">获取二维码</a-button>
+          </div>
+          <div v-else-if="loading" class="loading">
             <a-spin :size="32" />
             <p>正在获取二维码...</p>
           </div>
           <div v-else class="qrcode-container">
             <div v-if="qrUrl" class="qr-code">
               <img :src="qrUrl" alt="登录二维码" />
-              <div v-if="expired" class="mask" @click="fetchQrCode('old')">
+              <div v-if="expired" class="mask" @click="fetchQrCode(qrType)">
                 <icon-refresh :size="30" />
                 <p>已过期，点击刷新</p>
               </div>
@@ -38,25 +56,7 @@
         </div>
       </a-tab-pane>
 
-      <a-tab-pane key="qrcodenew" title="新版扫码">
-        <div class="login-box">
-          <div v-if="loading" class="loading">
-            <a-spin :size="32" />
-            <p>正在获取二维码...</p>
-          </div>
-          <div v-else class="qrcode-container">
-            <div v-if="qrUrl" class="qr-code">
-              <img :src="qrUrl" alt="登录二维码" />
-              <div v-if="expired" class="mask" @click="fetchQrCode('new')">
-                <icon-refresh :size="30" />
-                <p>已过期，点击刷新</p>
-              </div>
-            </div>
-            <p class="status-msg">{{ statusMsg }}</p>
-          </div>
-        </div>
-      </a-tab-pane>
-
+      <!-- 
       <a-tab-pane key="a16" title="A16数据登录">
         <div class="a16-login-box">
           <a-form :model="a16Form" layout="vertical" @submit="handleA16Login">
@@ -76,20 +76,21 @@
           </a-form>
         </div>
       </a-tab-pane>
+      -->
 
       <a-tab-pane key="device" title="62账号登录">
         <div class="a16-login-box">
           <a-form :model="deviceForm" layout="vertical" @submit="handleDeviceLogin">
-            <a-form-item field="Account" label="微信账号" required>
-              <a-input v-model="deviceForm.Account" placeholder="手机号/微信号/QQ" />
+            <a-form-item field="UserName" label="微信账号" required>
+              <a-input v-model="deviceForm.UserName" placeholder="手机号/微信号/QQ" />
             </a-form-item>
             <a-form-item field="Password" label="密码" required>
               <a-input-password v-model="deviceForm.Password" placeholder="请输入密码" />
             </a-form-item>
-            <a-form-item field="DeviceData" label="62 数据">
+            <a-form-item field="LoginData" label="62 数据" help="62数据为ipad微信登录环境数据">
               <a-textarea 
-                v-model="deviceForm.DeviceData" 
-                placeholder="请输入 62 数据 (可选)" 
+                v-model="deviceForm.LoginData" 
+                placeholder="请输入 62 数据" 
                 :auto-size="{ minRows: 2, maxRows: 4 }"
               />
             </a-form-item>
@@ -109,7 +110,9 @@ import { loginApi } from '@/api/modules/im';
 import { Message } from '@arco-design/web-vue';
 import {
   IconRefresh,
-  IconThunderbolt
+  IconThunderbolt,
+  IconQrcode,
+  IconSafe
 } from '@arco-design/web-vue/es/icon';
 
 const props = defineProps({
@@ -124,25 +127,29 @@ const emit = defineEmits(['success']);
 // --- 扫码登录相关 ---
 const qrUrl = ref('');
 const uuid = ref('');
-const loading = ref(true);
+const authKey = ref(props.assignedKey || ''); // 保存可用的认证 Key
+const loading = ref(false); // 默认不自动加载
 const expired = ref(false);
 const statusMsg = ref('请使用微信扫码');
+const qrType = ref<'new' | 'old'>('new');
 let timer: any = null;
 
-// --- A16 登录相关 ---
+// --- A16 登录相关 (已注释) ---
+/*
 const a16Loading = ref(false);
 const a16Form = reactive({
   A16Data: '',
   DeviceName: 'IWE-Desktop',
   Key: props.assignedKey // 使用分配的 Key
 });
+*/
 
 // --- 62 账号登录相关 ---
 const deviceLoading = ref(false);
 const deviceForm = reactive({
-  Account: '',
+  UserName: '',
   Password: '',
-  DeviceData: '',
+  LoginData: '',
   Key: props.assignedKey
 });
 
@@ -172,13 +179,15 @@ const fetchQrCode = async (type: 'old' | 'new' = 'new') => {
   uuid.value = '';
   stopPolling();
   try {
+    const requestKey = authKey.value;
     const res: any = type === 'new' 
-      ? await loginApi.getQrCodeNew(props.assignedKey)
-      : await loginApi.getQrCode(props.assignedKey);
+      ? await loginApi.getQrCodeNew(requestKey)
+      : await loginApi.getQrCode(requestKey);
     if (res && res.QrCodeUrl) {
       qrUrl.value = res.QrCodeUrl;
       const match = qrUrl.value.match(/\/x\/([^&?]+)/);
-      uuid.value = match ? match[1] : '';
+      uuid.value = res.Uuid || res.Key || (match ? match[1] : '');
+      authKey.value = res.Key || requestKey || uuid.value; // 优先使用接口返回的 Key
       startPolling();
     } else {
       throw new Error('API 返回格式不匹配');
@@ -191,19 +200,16 @@ const fetchQrCode = async (type: 'old' | 'new' = 'new') => {
 };
 
 const handleTabChange = (key: any) => {
-  if (key === 'qrcode') {
-    fetchQrCode('old');
-  } else if (key === 'qrcodenew') {
-    fetchQrCode('new');
-  }
+  // 不再自动获取二维码，需手动点击
 };
 
 const startPolling = () => {
-  if (!uuid.value) return;
+  const pollKey = authKey.value || uuid.value || props.assignedKey;
+  if (!pollKey) return;
   stopPolling();
   timer = setInterval(async () => {
     try {
-      const res: any = await loginApi.checkLogin(uuid.value, props.assignedKey);
+      const res: any = await loginApi.checkLogin(pollKey);
       if (res && res.Status === 2) {
           stopPolling();
           Message.success('登录成功');
@@ -219,6 +225,7 @@ const startPolling = () => {
   }, 2000);
 };
 
+/*
 const handleA16Login = async () => {
   if (!a16Form.A16Data) return Message.warning('请输入 A16 数据');
   a16Loading.value = true;
@@ -240,18 +247,33 @@ const handleA16Login = async () => {
     a16Loading.value = false;
   }
 };
+*/
 
 const handleDeviceLogin = async () => {
-  if (!deviceForm.Account || !deviceForm.Password) return Message.warning('请输入账号和密码');
+  if (!deviceForm.UserName || !deviceForm.Password) return Message.warning('请输入账号和密码');
   deviceLoading.value = true;
   try {
-    const res: any = await loginApi.deviceLogin(deviceForm.Key, deviceForm);
+    const payload = {
+      DeviceInfo: {
+        AndroidId: "",
+        ImeI: "",
+        Manufacturer: "",
+        Model: ""
+      },
+      LoginData: deviceForm.LoginData,
+      Password: deviceForm.Password,
+      Proxy: "",
+      Ticket: "",
+      Type: 0,
+      UserName: deviceForm.UserName
+    };
+    const res: any = await loginApi.deviceLogin(authKey.value || deviceForm.Key, payload);
     if (res && res.Key) {
       Message.success('62 账号登录成功');
       emit('success', {
-        uuid: 'device-' + Date.now(),
+        uuid: res.Uuid || 'device-' + Date.now(),
         sessionKey: res.Key,
-        nickname: res.Nickname || deviceForm.Account
+        nickname: res.Nickname || deviceForm.UserName
       });
     } else {
       Message.error(res?.Msg || '登录失败');
@@ -266,7 +288,7 @@ const handleDeviceLogin = async () => {
 const stopPolling = () => { if (timer) clearInterval(timer); timer = null; };
 onMounted(() => {
   fetchConnectStatus();
-  fetchQrCode();
+  // 不再自动获取二维码
 });
 onUnmounted(() => stopPolling());
 </script>

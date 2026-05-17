@@ -273,10 +273,10 @@ export const contactCache = {
     });
   },
 
-  async getEstimatedSize() {
-    const contactCount = await this.getCount(STORE_NAME) as number;
-    const msgCount = await this.getCount(MSG_STORE) as number;
-    const convCount = await this.getCount(CONV_STORE) as number;
+  async getEstimatedSize(accountUuid?: string) {
+    const contactCount = await this.getCount(STORE_NAME, accountUuid) as number;
+    const msgCount = await this.getCount(MSG_STORE, accountUuid) as number;
+    const convCount = await this.getCount(CONV_STORE, accountUuid) as number;
     const sizeInBytes = (contactCount * 3072) + (msgCount * 1024) + (convCount * 512);
     return this.formatSize(sizeInBytes);
   },
@@ -326,13 +326,28 @@ export const contactCache = {
     return `${(sizeInBytes / (1024 * 1024)).toFixed(2)} MB`;
   },
 
-  async clearStore(storeName: string) {
+  async clearStore(storeName: string, accountUuid?: string) {
     const db = await this.init();
     return new Promise((resolve) => {
       const transaction = db.transaction(storeName, 'readwrite');
       const store = transaction.objectStore(storeName);
-      store.clear();
-      transaction.oncomplete = () => resolve(true);
+      
+      if (accountUuid && store.indexNames.contains('accountUuid')) {
+        const index = store.index('accountUuid');
+        const request = index.openCursor(IDBKeyRange.only(accountUuid));
+        request.onsuccess = (e: any) => {
+          const cursor = e.target.result;
+          if (cursor) {
+            cursor.delete();
+            cursor.continue();
+          } else {
+            resolve(true);
+          }
+        };
+      } else {
+        store.clear();
+        transaction.oncomplete = () => resolve(true);
+      }
     });
   },
 
@@ -447,16 +462,23 @@ export const contactCache = {
     });
   },
 
-  async clearAll() {
-    const db = await this.init();
-    return new Promise((resolve) => {
-      const transaction = db.transaction([STORE_NAME, MSG_STORE, CONV_STORE, AVATAR_STORE], 'readwrite');
-      transaction.objectStore(STORE_NAME).clear();
-      transaction.objectStore(MSG_STORE).clear();
-      transaction.objectStore(CONV_STORE).clear();
-      transaction.objectStore(AVATAR_STORE).clear();
-      transaction.oncomplete = () => resolve(true);
-    });
+  async clearAll(accountUuid?: string) {
+    if (!accountUuid) {
+      const db = await this.init();
+      return new Promise((resolve) => {
+        const transaction = db.transaction([STORE_NAME, MSG_STORE, CONV_STORE, AVATAR_STORE], 'readwrite');
+        transaction.objectStore(STORE_NAME).clear();
+        transaction.objectStore(MSG_STORE).clear();
+        transaction.objectStore(CONV_STORE).clear();
+        transaction.objectStore(AVATAR_STORE).clear();
+        transaction.oncomplete = () => resolve(true);
+      });
+    } else {
+      await this.clearStore(STORE_NAME, accountUuid);
+      await this.clearStore(MSG_STORE, accountUuid);
+      await this.clearStore(CONV_STORE, accountUuid);
+      return true;
+    }
   },
 
   async saveAvatar(url: string, blob: Blob) {

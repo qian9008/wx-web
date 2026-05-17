@@ -3,12 +3,15 @@ import request from '@/utils/request';
 export const loginApi = {
   getQrCode: (key?: string) => request.post(`/login/GetLoginQrCodeNewX${key ? `?key=${key}` : ''}`, {}),
   // 新扫码登录接口
-  getQrCodeNew: (key?: string) => request.post(`/login/GetLoginQrCodeNew${key ? `?key=${key}` : ''}`, {}),
-  checkLogin: (uuid: string, key?: string) => request.get(`/login/CheckLoginStatus?uuid=${uuid}${key ? `&key=${key}` : ''}`),
+  getQrCodeNew: (key?: string) => request.post(`/login/GetLoginQrCodeNew${key ? `?key=${key}` : ''}`, { Check: true }),
+  checkLogin: (authCode: string) => request.get(`/login/CheckLoginStatus?key=${authCode}`),
   getOnlineAccounts: () => request.get('/equipment/GetOnlineInfo'),
   
-  // A16 数据登录
-  a16Login: (data: any) => request.post('/login/A16Login', data),
+  // A16 数据登录 (已注释)
+  // a16Login: (data: any) => request.post('/login/A16Login', data),
+
+  // 提取62数据
+  get62Data: (license: string) => request.get(`/login/Get62Data?key=${license}`),
   
   // 62 账号密码登录
   deviceLogin: (license: string, data: any) => request.post(`/login/DeviceLogin?key=${license}`, data),

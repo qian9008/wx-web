@@ -84,10 +84,25 @@ export const useAccountStore = defineStore('account', {
       return this.accountContactMaps[this.activeAccountUuid] || {};
     },
     // 头像 Blob URL 缓存：url -> blobUrl
-    avatarBlobMap: {} as Record<string, string>
+    avatarBlobMap: {} as Record<string, string>,
+    _statusTimer: null as any
   }),
 
   actions: {
+    startStatusPolling() {
+      if (this._statusTimer) clearInterval(this._statusTimer);
+      this._statusTimer = setInterval(() => {
+        this.accounts.forEach(acc => {
+          if (acc.sessionKey) this.checkSingleAccountStatus(acc.sessionKey);
+        });
+      }, 30000); // 每 30 秒轮询一次
+    },
+    stopStatusPolling() {
+      if (this._statusTimer) {
+        clearInterval(this._statusTimer);
+        this._statusTimer = null;
+      }
+    },
     setGlobalConfig(url: string, adminKey: string, tokenKey: string, debug: any) {
       this.baseUrl = url;
       this.adminKey = adminKey;
@@ -133,17 +148,20 @@ export const useAccountStore = defineStore('account', {
           data = res.Data || res;
 
           // adminKey 模式：先用 API 返回的 ID 建账号，再通过 getProfile 修正为真实 wxid
-          this.accounts = (Array.isArray(data) ? data : []).map((acc: any) => {
+          this.accounts = await Promise.all((Array.isArray(data) ? data : []).map(async (acc: any) => {
             const userName = acc.userName || acc.UserName || acc.wx_id || acc.uuid || acc.wxid;
             const key = acc.license || acc.key || acc.session_key || acc.sessionKey || '';
+            const rawAvatar = acc.avatar || '';
+            // 直接用已缓存的 blob URL，如果本地无缓存就用原始 URL
+            const resolvedAvatar = rawAvatar ? await this.getAvatarUrl(rawAvatar) || rawAvatar : '';
             return {
               uuid: userName || key || '',
               sessionKey: key,
               nickname: acc.nick_name || acc.nickname || (userName ? '已登录' : '未登录槽位'),
-              avatar: acc.avatar || '',
-              status: (acc.status || (userName ? 'online' : 'offline')) as 'online' | 'offline'
+              avatar: resolvedAvatar,
+              status: 'offline' // 初始先设为离线，由 checkSingleAccountStatus 修正
             };
-          });
+          }));
 
           if (this.accounts.length > 0 && !this.activeAccountUuid) {
             const firstOnline = this.accounts.find(a => a.uuid);
@@ -152,7 +170,9 @@ export const useAccountStore = defineStore('account', {
 
           // 异步修正 ID：getProfile → 拿到真实 wxid → 再注册 Socket
           this.accounts.forEach(acc => {
-            if (acc.sessionKey) this.fetchProfileAndFixUuid(acc.sessionKey);
+            if (acc.sessionKey) {
+              this.fetchProfileAndFixUuid(acc.sessionKey);
+            }
           });
 
         } else if (this.tokenKey) {
@@ -169,17 +189,22 @@ export const useAccountStore = defineStore('account', {
             const realNick = userInfo?.nickName?.str || userInfo?.NickName?.str 
                            || userInfo?.nickName || userInfo?.NickName;
             const realAvatar = userInfo?.smallHeadImgUrl || userInfo?.SmallHeadImgUrl 
-                             || userInfo?.bigHeadImgUrl || userInfo?.BigHeadImgUrl;
+                             || userInfo?.headImgUrl || userInfo?.HeadImgUrl
+                             || userInfo?.bigHeadImgUrl || userInfo?.BigHeadImgUrl
+                             || userInfo?.avatar;
 
             const resolvedUuid = realWxid || this.tokenKey;
             console.log(`[AccountStore] TOKEN_KEY 模式 GetProfile 解析: uuid=${resolvedUuid}`);
+
+            // 直接 await 拿到本地 blob URL（如果缓存有就直接命中，不再重新下载）
+            const resolvedAvatar = realAvatar ? await this.getAvatarUrl(realAvatar) : '';
 
             this.accounts = [{
               uuid: resolvedUuid,
               sessionKey: this.tokenKey,
               nickname: realNick || '授权账号',
-              avatar: realAvatar || '',
-              status: realWxid ? 'online' : 'offline'
+              avatar: resolvedAvatar || realAvatar || '',
+              status: 'offline'
             }];
           } catch (e) {
             console.warn('[AccountStore] TOKEN_KEY GetProfile 失败，使用 tokenKey 占位:', e);
@@ -196,12 +221,17 @@ export const useAccountStore = defineStore('account', {
           const targetAcc = this.accounts[0];
           if (targetAcc) {
             this.activeAccountUuid = targetAcc.uuid;
-            // 直接注册 Socket，因为 uuid 已是最终确定的 ID
             if (targetAcc.sessionKey) {
-              socketManager.registerAccount(targetAcc.uuid, targetAcc.sessionKey);
-              // 加载缓存数据
-              this.loadContactsFromCache(targetAcc.uuid);
-              this.syncFullContactList(targetAcc.uuid, targetAcc.sessionKey);
+              const isOnline = await this.checkSingleAccountStatus(targetAcc.sessionKey);
+              if (isOnline) {
+                // 直接注册 Socket，因为 uuid 已是最终确定的 ID
+                socketManager.registerAccount(targetAcc.uuid, targetAcc.sessionKey);
+                // 加载缓存数据
+                this.loadContactsFromCache(targetAcc.uuid);
+                this.syncFullContactList(targetAcc.uuid, targetAcc.sessionKey);
+              } else {
+                console.log(`[AccountStore] 账号 ${targetAcc.uuid} 离线，跳过数据同步`);
+              }
             }
           }
         }
@@ -210,8 +240,43 @@ export const useAccountStore = defineStore('account', {
       }
     },
 
+    async checkSingleAccountStatus(license: string): Promise<boolean> {
+      if (!license) return false;
+      try {
+        const res: any = await loginApi.getOnlineStatus(license);
+        const data = res?.Data || res;
+        if (data) {
+          const isOnline = data.loginState === 1;
+          const accIndex = this.accounts.findIndex(a => a.sessionKey === license);
+          if (accIndex > -1) {
+            const acc = this.accounts[accIndex];
+            const wasOffline = acc.status === 'offline';
+            acc.status = isOnline ? 'online' : 'offline';
+            
+            // 如果轮询发现账号从离线变成了在线（且有了真实的 uuid，排除初始状态）
+            if (wasOffline && isOnline && acc.uuid && acc.uuid !== license) {
+              console.log(`[AccountStore] 发现账号 ${acc.uuid} 恢复在线，自动恢复数据同步`);
+              socketManager.registerAccount(acc.uuid, acc.sessionKey);
+              this.loadContactsFromCache(acc.uuid);
+              this.syncFullContactList(acc.uuid, acc.sessionKey);
+            }
+          }
+          return isOnline;
+        }
+      } catch (err) {
+        console.error(`[AccountStore] 检测状态失败 (${license}):`, err);
+        const accIndex = this.accounts.findIndex(a => a.sessionKey === license);
+        if (accIndex > -1) {
+          this.accounts[accIndex].status = 'offline';
+        }
+      }
+      return false;
+    },
+
     async fetchProfileAndFixUuid(license: string) {
       try {
+        const isOnline = await this.checkSingleAccountStatus(license);
+
         const res: any = await loginApi.getProfile(license);
         console.log(`[AccountStore] GetProfile 响应 (${license.substring(0,8)}...):`, res);
         
@@ -226,7 +291,7 @@ export const useAccountStore = defineStore('account', {
 
         const realWxid = userInfo.userName?.str || userInfo.UserName?.str || userInfo.userName || userInfo.UserName;
         const realNick = userInfo.nickName?.str || userInfo.NickName?.str || userInfo.nickName || userInfo.NickName;
-        const realAvatar = userInfo.smallHeadImgUrl || userInfo.SmallHeadImgUrl || userInfo.bigHeadImgUrl || userInfo.BigHeadImgUrl;
+        const realAvatar = userInfo.smallHeadImgUrl || userInfo.SmallHeadImgUrl || userInfo.headImgUrl || userInfo.HeadImgUrl || userInfo.bigHeadImgUrl || userInfo.BigHeadImgUrl || userInfo.avatar;
 
         if (realWxid) {
           console.log(`[AccountStore] 身份比对: 当前ID vs 真实ID -> ${license.substring(0,10)}... vs ${realWxid}`);
@@ -239,7 +304,12 @@ export const useAccountStore = defineStore('account', {
             if (oldUuid === realWxid) {
               console.log(`[AccountStore] 账号 ID 已是最新，确保 Socket 注册正确 (${realWxid})`);
               // ID 已正确，但 Socket 可能尚未注册（首次启动时跳过了预注册）
-              socketManager.registerAccount(realWxid, license);
+              if (isOnline) {
+                socketManager.registerAccount(realWxid, license);
+              } else {
+                socketManager.stopAccount(realWxid);
+                console.log(`[AccountStore] 账号 ${realWxid} 离线，跳过数据同步`);
+              }
               return;
             }
 
@@ -263,7 +333,11 @@ export const useAccountStore = defineStore('account', {
             // 4. 更新 Store 中的账号信息
             this.accounts[accIndex].uuid = realWxid;
             this.accounts[accIndex].nickname = realNick || this.accounts[accIndex].nickname;
-            this.accounts[accIndex].avatar = realAvatar || this.accounts[accIndex].avatar;
+            // 直接用本地缓存的 blob URL，避免防盗链导致原始 URL 无法渲染
+            const rawAvatar = realAvatar || this.accounts[accIndex].avatar;
+            if (rawAvatar) {
+              this.accounts[accIndex].avatar = await this.getAvatarUrl(rawAvatar) || rawAvatar;
+            }
             
             if (this.activeAccountUuid === oldUuid || this.activeAccountUuid === license) {
               this.activeAccountUuid = realWxid;
@@ -273,14 +347,18 @@ export const useAccountStore = defineStore('account', {
             if (oldUuid) {
               socketManager.stopAccount(oldUuid);
             }
-            // 这里 registerAccount 内部会自己处理 wxid 查找，但我们已经知道 realWxid 了
-            socketManager.registerAccount(realWxid, license);
-            
-            // 6. 重新加载新 ID 的缓存
-            await this.loadContactsFromCache(realWxid);
-            
-            // 7. 触发新 ID 的全量同步判定
-            this.syncFullContactList(realWxid, license);
+            if (isOnline) {
+              // 这里 registerAccount 内部会自己处理 wxid 查找，但我们已经知道 realWxid 了
+              socketManager.registerAccount(realWxid, license);
+              
+              // 6. 重新加载新 ID 的缓存
+              await this.loadContactsFromCache(realWxid);
+              
+              // 7. 触发新 ID 的全量同步判定
+              this.syncFullContactList(realWxid, license);
+            } else {
+              console.log(`[AccountStore] 账号 ${realWxid} 离线，跳过数据同步`);
+            }
           }
         }
       } catch (e) {

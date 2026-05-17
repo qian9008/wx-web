@@ -8,6 +8,7 @@ import { isDebug } from '@/utils/debug';
 class GlobalSocketManager {
   private connections: Map<string, IMService> = new Map();
   private pollingTimers: Map<string, any> = new Map();
+  private lastPollOnceTime: Map<string, number> = new Map();
 
   public async registerAccount(userName: string, key: string) {
     if (!userName) return;
@@ -58,6 +59,15 @@ class GlobalSocketManager {
 
   // Fix #7: 单次即时轮询（WS 断开时触发）
   private async pollOnce(uuid: string, key: string) {
+    const now = Date.now();
+    const lastTime = this.lastPollOnceTime.get(uuid) || 0;
+    // 限制单次轮询触发频率，防止重连期间过度频繁请求（10秒节流）
+    if (now - lastTime < 10000) {
+      if (isDebug('socket')) console.log(`[SocketManager:${uuid}] pollOnce 触发过于频繁，已拦截`);
+      return;
+    }
+    this.lastPollOnceTime.set(uuid, now);
+
     try {
       if (isDebug('socket')) console.log(`[SocketManager:${uuid}] WS 断开，立即发起一次补位轮询`);
       const res: any = await messageApi.syncMsg(key, 0);
@@ -111,7 +121,6 @@ class GlobalSocketManager {
   private handleMessage(userName: string, msg: any) {
     const chatStore = useChatStore();
     const accountStore = useAccountStore();
-    if (isDebug('socket')) console.log(`[SocketManager:${userName}] 收到原始消息内容:`, JSON.stringify(msg).slice(0, 500));
 
     const msgId = msg.NewMsgId || msg.MsgId || msg.msg_id || msg.new_msg_id || msg.UUID;
 
@@ -135,7 +144,6 @@ class GlobalSocketManager {
     }
 
     const parsedMsg = MessageParser.parse(msg, userName);
-    if (isDebug('socket')) console.log(`[Socket:${userName}] 消息解析完成:`, parsedMsg);
 
     // 2. 拦截状态通知和其他非显示类消息
     if (parsedMsg.type === 'status_notify' || (!parsedMsg.content && parsedMsg.type === 'unsupported')) {
@@ -143,10 +151,7 @@ class GlobalSocketManager {
       return;
     }
 
-    if (isDebug('socket')) console.log(`[Socket:${userName}] 准备转发有效消息到 ChatStore...`);
-    chatStore.addParsedMessage(userName, parsedMsg).then(() => {
-      if (isDebug('socket')) console.log(`[Socket:${userName}] ChatStore 已成功处理并存储消息: ${msgId}`);
-    }).catch(err => {
+    chatStore.addParsedMessage(userName, parsedMsg).catch(err => {
       console.error(`[Socket:${userName}] 存储消息时发生严重异常:`, err);
     });
   }
