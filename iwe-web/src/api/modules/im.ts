@@ -40,9 +40,9 @@ export const messageApi = {
   syncMsg: (license: string, count = 0) => 
     request.post(`/message/HttpSyncMsg?key=${license}`, { Count: count }),
     
-  // 同步历史消息 (接口暂不存在)
-  // syncHistoryMsg: (license: string) =>
-  //   request.post(`/message/NewSyncHistoryMessage?key=${license}`, { Count: 0 }),
+  // 同步历史消息
+  syncHistoryMsg: (license: string) =>
+    request.post(`/message/NewSyncHistoryMessage?key=${license}`, { Count: 0 }),
 
   sendText: (license: string, toUser: string, content: string) => 
     request.post(`/message/SendTextMessage?key=${license}`, { 
