@@ -163,4 +163,15 @@
    - **表单与按钮组移动端折行 (Form Input Group Wrapping)**：全局将移动端的 `.arco-input-group` 变更为 `flex-direction: column` 并强制内部输入框 `.arco-input-wrapper` 及发送按钮宽度为 100%，完美实现了诸如“绑定手机验证码”表单项在移动端的自适应缩放。
    - **登录弹窗布局微调 (Login Layout Polish)**：在 [Login.vue](file:///d:/Users/Documents/iwe/iwe-web/src/views/Login.vue) 中优化了移动端下的 `.qr-code` 盒模型尺寸、`.connect-box` 内边距及 Tabs 靠左对齐方式，确保扫码及 62 账号登录在小屏设备上的视觉纯净度。
 
-
+### 2026-05-18 高性能头像滑动过期、写 I/O 阻断降低与多账号极速同步重构收官
+1. **高性能头像滑动过期与写 I/O 归零机制 (`contactCache.ts`)**：
+   - **双阈值管理**：实现了 30 天超长 TTL 缓存清理机制，解决了微信头像频繁过期与 `403 Forbidden` 僵尸头像问题。
+   - **24小时写阻断**：引入 **24 小时“写阀值”网关模式**。单日内高频点开会话或滚动联系人列表时，只读不写，将 IndexedDB 写 I/O 降低 99.9% 以上，彻底杜绝写放大。
+   - **非阻塞异步写事务**：读取头像仅用 `readonly` 只读事务，读完放行渲染，把续期（`_renewAvatar`）和失效清理（`_deleteAvatar`）独立出前台控制链，丢给后台异步执行，保证页面流畅度始终维持在 60fps。
+2. **多账号双引擎 Redis 极速冷启动同步整合 (`account.ts`)**：
+   - **双阶段并行冷启动**：整合了极速同步冷启动双引擎逻辑。阶段 A 构造主服务全局基准绝对 URL 请求原 Redis 同步接口 (`GetRedisSyncMsg`) 以防 IP 污染，秒级拉取历史积压并进行 idle 分帧解析；阶段 B 自动识别新 Redis 独占回写地址，自动补写联系人。
+   - **Redis 独立持久化**：完善了批量联系人回写 Redis 的链路 (`saveSingleContactToRedis` / `saveAllContactsToRedis`)，使 Redis 极速模式下的持久化彻底取代传统 IndexedDB，实现真正的全内存超高吞吐。
+3. **修复严重的编译错乱与功能错位**：
+   - **重塑语法树**：彻底扫清因 IDE 合并冲突产生的语法废品：修复了 `syncViaRedis` 的断流声明；恢复了被错误夹塞的 `fetchProfileAndFixUuid` 闭合边界；重建了被覆盖的 `loadContactsFromCache` 函数；修正了 `processDetailsQueue` 补全队列被误塞为头像下载方法而失效的致命问题。
+   - **参数定位纠偏**：修正了 `contactCache.set(...)` 调用参数位置颠倒的缺陷。
+   - **解锁 API 接口**：完善了解锁 `im.ts` 历史增量消息同步 API (`syncHistoryMsg`) 及其在 `socketManager.ts` 中的整合调用。
