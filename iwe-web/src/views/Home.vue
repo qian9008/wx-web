@@ -128,7 +128,7 @@
     <!-- 第三栏：列表展示 -->
     <div class="column chat-list">
       <div class="list-search">
-        <a-input-search placeholder="搜索" background-color="#2e2e2e" />
+        <a-input-search v-model="searchQuery" placeholder="搜索 (匹配名称/微信号/消息)" background-color="#2e2e2e" allow-clear />
       </div>
       
       <div class="scroll-area" @scroll="handleScroll">
@@ -184,7 +184,8 @@
               v-lazy-contact="getContactId(contact)"
             >
               <a-avatar :size="42" shape="square" :style="{ backgroundColor: '#337ecc' }">
-                <img v-if="getContactAvatar(contact)" :src="accountStore.avatarBlobMap[getContactAvatar(contact)] || getContactAvatar(contact)" referrerpolicy="no-referrer" loading="lazy" />
+                <!-- 🚀 优化：只有当该联系人真正进入可见视口，才挂载 <img> 并发起网络请求加载头像 -->
+                <img v-if="visibleAvatars[getContactId(contact)] && getContactAvatar(contact)" :src="accountStore.avatarBlobMap[getContactAvatar(contact)] || getContactAvatar(contact)" referrerpolicy="no-referrer" loading="lazy" />
                 <template v-else>{{ getContactName(contact)[0] }}</template>
               </a-avatar>
               <div class="info">
@@ -206,7 +207,8 @@
               v-lazy-contact="getContactId(contact)"
             >
               <a-avatar :size="42" shape="square" :style="{ backgroundColor: '#337ecc' }">
-                <img v-if="getContactAvatar(contact)" :src="accountStore.avatarBlobMap[getContactAvatar(contact)] || getContactAvatar(contact)" referrerpolicy="no-referrer" loading="lazy" />
+                <!-- 🚀 优化：只有当该联系人真正进入可见视口，才挂载 <img> 并发起网络请求加载头像 -->
+                <img v-if="visibleAvatars[getContactId(contact)] && getContactAvatar(contact)" :src="accountStore.avatarBlobMap[getContactAvatar(contact)] || getContactAvatar(contact)" referrerpolicy="no-referrer" loading="lazy" />
                 <template v-else>{{ getContactName(contact)[0] }}</template>
               </a-avatar>
               <div class="info">
@@ -228,7 +230,8 @@
               v-lazy-contact="getContactId(contact)"
             >
               <a-avatar :size="42" shape="square" :style="{ backgroundColor: '#337ecc' }">
-                <img v-if="getContactAvatar(contact)" :src="accountStore.avatarBlobMap[getContactAvatar(contact)] || getContactAvatar(contact)" referrerpolicy="no-referrer" loading="lazy" />
+                <!-- 🚀 优化：只有当该联系人真正进入可见视口，才挂载 <img> 并发起网络请求加载头像 -->
+                <img v-if="visibleAvatars[getContactId(contact)] && getContactAvatar(contact)" :src="accountStore.avatarBlobMap[getContactAvatar(contact)] || getContactAvatar(contact)" referrerpolicy="no-referrer" loading="lazy" />
                 <template v-else>{{ getContactName(contact)[0] }}</template>
               </a-avatar>
               <div class="info">
@@ -626,6 +629,23 @@ import dayjs from 'dayjs';
 import { isDebug } from '@/utils/debug';
 const accountStore = useAccountStore();
 const chatStore = useChatStore();
+
+// --- 基础辅助工具函数（优先提升至初始化顶部，避免 TDZ 问题） ---
+const getContactId = (c: any) => {
+  if (!c) return '';
+  const user = c.userName || c.UserName || c.wxid;
+  return (user && typeof user === 'object') ? (user.str || '') : (user || '');
+};
+
+const getContactName = (c: any) => {
+  if (!c) return '未知';
+  const nick = c.nickName || c.NickName || c.nickname;
+  const nickStr = (nick && typeof nick === 'object') ? nick.str : nick;
+  const remark = c.remark || c.Remark;
+  const remarkStr = (remark && typeof remark === 'object') ? remark.str : remark;
+  return remarkStr || nickStr || getContactId(c) || '未知';
+};
+
 const inputText = ref('');
 const loginVisible = ref(false);
 const adminVisible = ref(false);
@@ -881,6 +901,12 @@ const cacheStats = ref({
 });
 
 const contactCategory = ref('friend'); // friend, room, official
+const searchQuery = ref(''); // 🚀 搜索过滤查询词
+
+// 当切换活跃账号时，清空搜索框
+watch(() => accountStore.activeAccountUuid, () => {
+  searchQuery.value = '';
+});
 
 // 内存镜像获取联系人并分类
 const sortedContacts = computed(() => {
@@ -890,13 +916,36 @@ const sortedContacts = computed(() => {
   }
 
   const all = Object.values(accountStore.contactMap);
+  
+  // 🚀 搜索过滤逻辑（支持对包含 Protobuf 对象的微信号/昵称/备注进行防御性安全检索）
+  let filteredAll = all;
+  if (searchQuery.value.trim()) {
+    const q = searchQuery.value.trim().toLowerCase();
+    filteredAll = all.filter(c => {
+      if (!c) return false;
+      
+      const id = getContactId(c).toLowerCase();
+      const name = getContactName(c).toLowerCase();
+      
+      // 提取原始 nickname 并进行防崩安全匹配
+      const nick = c.nickName || c.NickName || c.nickname;
+      const nickStr = String((nick && typeof nick === 'object') ? nick.str : nick || '').toLowerCase();
+      
+      // 提取原始备注并进行防崩安全匹配
+      const remark = c.remark || c.Remark;
+      const remarkStr = String((remark && typeof remark === 'object') ? remark.str : remark || '').toLowerCase();
+      
+      return id.includes(q) || name.includes(q) || nickStr.includes(q) || remarkStr.includes(q);
+    });
+  }
+
   const categories = {
     friend: [] as any[],
     room: [] as any[],
     official: [] as any[]
   };
 
-  all.forEach(c => {
+  filteredAll.forEach(c => {
     const id = getContactId(c);
     if (!id) return;
 
@@ -921,10 +970,13 @@ const sortedContacts = computed(() => {
   return categories;
 });
 
-// --- 分批增量渲染逻辑，打造原生级流畅度 ---
+// --- 分批增量渲染逻辑与视口感知头像懒加载，打造原生级流畅度 ---
 const visibleFriendLimit = ref(100);
 const visibleRoomLimit = ref(100);
 const visibleOfficialLimit = ref(100);
+
+// 用于记录当前已进入视口（可见区域）的联系人，只有标记为 true 的联系人才真正挂载 <img> 标签
+const visibleAvatars = reactive<Record<string, boolean>>({});
 
 const slicedFriends = computed(() => {
   return sortedContacts.value.friend.slice(0, visibleFriendLimit.value);
@@ -938,11 +990,12 @@ const slicedOfficials = computed(() => {
   return sortedContacts.value.official.slice(0, visibleOfficialLimit.value);
 });
 
-// 重置分页限制，切换页签或账号时恢复初始展示数量
+// 重置分页限制，切换页签或账号时恢复初始展示数量并清空可见头像集合
 watch([() => activeTab.value, () => contactCategory.value, () => accountStore.activeAccountUuid], () => {
   visibleFriendLimit.value = 100;
   visibleRoomLimit.value = 100;
   visibleOfficialLimit.value = 100;
+  Object.keys(visibleAvatars).forEach(key => delete visibleAvatars[key]);
 });
 
 // 监听滚动事件，接近底部时增量加载
@@ -965,7 +1018,7 @@ const currentConversations = computed(() => {
   
   // 修正：即使离线也允许显示缓存的会话列表
   const convs = chatStore.accountConversations[accountUuid] || [];
-  return convs.map(c => {
+  const mapped = convs.map(c => {
     const detail = accountStore.contactMap[c.wxid];
     return detail ? {
       ...c,
@@ -973,6 +1026,19 @@ const currentConversations = computed(() => {
       avatar: getContactAvatar(detail)
     } : c;
   });
+
+  // 🚀 会话搜索过滤逻辑
+  if (searchQuery.value.trim()) {
+    const q = searchQuery.value.trim().toLowerCase();
+    return mapped.filter(c => {
+      const name = (getConvName(c) || '').toLowerCase();
+      const wxid = (c.wxid || '').toLowerCase();
+      const lastMsg = (c.lastMsg || '').toLowerCase();
+      return name.includes(q) || wxid.includes(q) || lastMsg.includes(q);
+    });
+  }
+
+  return mapped;
 });
 
 const currentMessages = computed(() => {
@@ -1164,18 +1230,7 @@ const handleSelectContact = (contact: any) => {
   activeTab.value = 'chat';
 };
 
-const getContactId = (c: any) => {
-  const user = c.userName || c.UserName || c.wxid;
-  return (user && typeof user === 'object') ? (user.str || '') : (user || '');
-};
-
-const getContactName = (c: any) => {
-  const nick = c.nickName || c.NickName || c.nickname;
-  const nickStr = (nick && typeof nick === 'object') ? nick.str : nick;
-  const remark = c.remark || c.Remark;
-  const remarkStr = (remark && typeof remark === 'object') ? remark.str : remark;
-  return remarkStr || nickStr || getContactId(c) || '未知';
-};
+// Note: getContactId and getContactName have been hoisted to the top of script setup to prevent temporal dead zone issues.
 
 const getContactAvatar = (c: any) => {
   const url = c.smallHeadImgUrl || c.SmallHeadImgUrl || c.headImgUrl || c.HeadImgUrl || c.avatar || '';
@@ -1254,6 +1309,9 @@ const lazyObserver = new IntersectionObserver((entries) => {
     if (entry.isIntersecting) {
       const wxid = entry.target.getAttribute('data-wxid');
       if (wxid) {
+        // 🚀 核心优化：标识该联系人已进入视口，允许模板动态挂载 <img> 并发出网络请求
+        visibleAvatars[wxid] = true;
+
         accountStore.enqueueContactDetails(wxid);
         
         // 懒加载头像：只有元素滚动到可视区域时，才主动下载并缓存头像
