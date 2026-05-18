@@ -43,8 +43,8 @@ class GlobalSocketManager {
       realWxid,
       `${wsBaseUrl}/ws/GetSyncMsg`,
       (msg) => this.handleMessage(realWxid, msg),
-      // Fix #7: WS 断开时立即发起一次轮询补位，不等待下一个 30s 周期
-      () => this.pollOnce(realWxid, key)
+      // WS 断开时立即发起补位轮询，并触发离线状态校验判定
+      () => this.handleDisconnect(realWxid, key)
     );
 
     service.connect(key);
@@ -78,6 +78,25 @@ class GlobalSocketManager {
       }
     } catch (e) {
       if (isDebug('socket')) console.warn(`[PollOnce:${uuid}] 补位轮询失败:`, e);
+    }
+  }
+
+  // WS 断开时触发：执行立即轮询补位 + 调用 GetLoginStatus 进行真实离线状态校验与判定
+  private async handleDisconnect(uuid: string, key: string) {
+    // 1. 触发即时轮询补位
+    this.pollOnce(uuid, key);
+    
+    // 2. 调用 /login/GetLoginStatus 检测是否离线并更新 UI 状态
+    const accountStore = useAccountStore();
+    if (isDebug('socket')) {
+      console.log(`[SocketManager:${uuid}] WebSocket 连接断开，立即调用 /login/GetLoginStatus 校验离线状态...`);
+    }
+    try {
+      await accountStore.checkSingleAccountStatus(key);
+    } catch (e) {
+      if (isDebug('socket')) {
+        console.warn(`[SocketManager:${uuid}] 离线状态校验失败:`, e);
+      }
     }
   }
 
@@ -147,6 +166,15 @@ class GlobalSocketManager {
 
     // 2. 拦截状态通知和其他非显示类消息
     if (parsedMsg.type === 'status_notify' || (!parsedMsg.content && parsedMsg.type === 'unsupported')) {
+      if (parsedMsg.type === 'status_notify' && parsedMsg.statusNotifyData?.username) {
+        const targetWxid = parsedMsg.statusNotifyData.username;
+        if (isDebug('socket')) {
+          console.log(`[Socket:${userName}] 收到状态同步消息，自动清除会话已读数: ${targetWxid}, lastMessageSvrId: ${parsedMsg.statusNotifyData.lastMessageSvrId}`);
+        }
+        chatStore.clearUnread(userName, targetWxid).catch(err => {
+          console.error(`[Socket:${userName}] 自动清除已读数失败:`, err);
+        });
+      }
       if (isDebug('socket')) console.log(`[Socket:${userName}] 消息类型为 ${parsedMsg.type} 且无内容，拦截显示`);
       return;
     }

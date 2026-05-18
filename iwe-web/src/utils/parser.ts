@@ -14,6 +14,11 @@ export interface AppMessage {
   isRevoked: boolean;
   rawXml?: string;
   imageUrl?: string;
+  statusNotifyData?: {
+    username: string;
+    lastMessageSvrId: string;
+    msgCreateTime: number;
+  };
 }
 
 export class MessageParser {
@@ -64,6 +69,26 @@ export class MessageParser {
     const trimmedContent = content.trim();
     if (trimmedContent.startsWith('<msg>') && trimmedContent.includes('<op')) {
       msg.type = 'status_notify';
+      try {
+        const doc = this.parser.parseFromString(trimmedContent, 'text/xml');
+        const opNode = doc.querySelector('op');
+        if (opNode) {
+          const username = doc.querySelector('username')?.textContent || '';
+          const name = doc.querySelector('name')?.textContent || '';
+          const argText = doc.querySelector('arg')?.textContent || '';
+          
+          if (name === 'lastMessage' && argText) {
+            const argJson = JSON.parse(argText);
+            msg.statusNotifyData = {
+              username: username.trim(),
+              lastMessageSvrId: String(argJson.messageSvrId || ''),
+              msgCreateTime: Number(argJson.MsgCreateTime || 0)
+            };
+          }
+        }
+      } catch (e) {
+        console.warn('[Parser] status_notify XML 解析失败', e);
+      }
       return msg;
     }
 

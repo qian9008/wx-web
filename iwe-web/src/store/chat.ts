@@ -14,6 +14,7 @@ export interface AppMessage {
   isSelf: boolean;
   isRevoked: boolean;
   imageUrl?: string;
+  statusNotifyData?: any;
 }
 
 export interface Conversation {

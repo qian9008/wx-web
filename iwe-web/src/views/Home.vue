@@ -28,14 +28,12 @@
           
           <a-tooltip :content="`${acc.nickname} (${acc.status === 'online' ? '在线' : '离线'})`" position="right">
             <div class="avatar-wrapper">
-              <a-badge :status="acc.status === 'online' ? 'success' : 'normal'" :offset="[-2, 38]">
-                <a-avatar :size="46" shape="square" class="acc-avatar">
-                  <img v-if="getAccountAvatar(acc)" :src="getAccountAvatar(acc)" referrerpolicy="no-referrer" :style="acc.status === 'offline' ? { filter: 'grayscale(100%)', opacity: '0.6' } : {}" />
-                  <template v-else>
-                    <span :style="acc.status === 'offline' ? { color: '#666' } : {}">{{ acc.nickname[0] }}</span>
-                  </template>
-                </a-avatar>
-              </a-badge>
+              <a-avatar :size="46" shape="square" class="acc-avatar" :class="{ 'online-neon': acc.status === 'online' }">
+                <img v-if="getAccountAvatar(acc)" :src="getAccountAvatar(acc)" referrerpolicy="no-referrer" :style="acc.status === 'offline' ? { filter: 'grayscale(100%)', opacity: '0.6' } : {}" />
+                <template v-else>
+                  <span :style="acc.status === 'offline' ? { color: '#666' } : {}">{{ acc.nickname[0] }}</span>
+                </template>
+              </a-avatar>
             </div>
           </a-tooltip>
         </div>
@@ -72,11 +70,15 @@
 
     <!-- 第二栏：功能导航 -->
     <div class="column nav-bar">
-      <!-- 顶部当前账号在线状态装饰 -->
+      <!-- 顶部当前账号在线状态装饰 & 支持点击手动在线检测 -->
       <div class="nav-bar-header">
-        <div class="status-indicator">
-          <a-tooltip :content="`当前账号状态: ${activeAccountOnlineStatus}`" position="right">
-            <div class="status-pulse" :class="{ online: activeAccountOnlineStatus === '在线' }">
+        <div class="status-indicator" style="cursor: pointer;">
+          <a-tooltip :content="activeAccountOnlineStatus === '在线' ? '当前账号在线 (点击重新检测)' : '当前账号离线 (点击检测上线)'" position="right">
+            <div 
+              class="status-pulse" 
+              :class="{ online: activeAccountOnlineStatus === '在线' }"
+              @click="handleActiveAccountManualCheck"
+            >
               <span class="pulse-ring"></span>
               <span class="pulse-dot"></span>
             </div>
@@ -716,6 +718,30 @@ const handleSwitchAccount = (uuid: string) => {
   });
 };
 
+const handleManualCheckOnline = async (acc: any) => {
+  if (!acc.sessionKey) return;
+  try {
+    Message.info(`正在检测账号 ${acc.nickname || '微信'} 的在线状态...`);
+    const isOnline = await accountStore.checkSingleAccountStatus(acc.sessionKey);
+    if (isOnline) {
+      Message.success(`账号 ${acc.nickname || '微信'} 当前已成功上线！`);
+    } else {
+      Message.warning(`账号 ${acc.nickname || '微信'} 当前处于离线状态。`);
+    }
+  } catch (err: any) {
+    Message.error(`状态检测失败: ${err.message || err}`);
+  }
+};
+
+const handleActiveAccountManualCheck = async () => {
+  const acc = accountStore.accounts.find(a => a.uuid === accountStore.activeAccountUuid || a.sessionKey === accountStore.activeAccountUuid);
+  if (!acc) {
+    Message.warning('当前未选择活跃账号');
+    return;
+  }
+  await handleManualCheckOnline(acc);
+};
+
 const handleOpenGlobalSettings = () => {
   adminPanelContext.value = 'global';
   adminVisible.value = true;
@@ -909,8 +935,30 @@ const handleExtract62DataForCurrent = async () => {
     const res: any = await loginApi.get62Data(acc.sessionKey);
     console.log('[Get62Data]', res);
     
-    extracted62Data.value = res.Data || res;
-    Message.success('62数据提取成功');
+    // 兼容解析 data/Data 字段并保存
+    let dataVal = '';
+    if (res) {
+      if (typeof res === 'string') {
+        dataVal = res;
+      } else if (typeof res === 'object') {
+        dataVal = res.Data || res.data || '';
+        if (dataVal && typeof dataVal === 'object') {
+          dataVal = dataVal.data || dataVal.Data || JSON.stringify(dataVal);
+        } else if (!dataVal) {
+          dataVal = JSON.stringify(res);
+        }
+      }
+    }
+    
+    extracted62Data.value = dataVal;
+    if (dataVal) {
+      localStorage.setItem(`wx_62_data_${acc.sessionKey}`, dataVal);
+      localStorage.setItem(`wx_62_data_${acc.uuid}`, dataVal);
+      localStorage.setItem('wx_62_data', dataVal); // 备份
+      Message.success('62数据提取成功，已按账号隔离保存至本地');
+    } else {
+      Message.success('62数据提取成功');
+    }
   } catch (err: any) {
     Message.error('提取失败: ' + err.message);
   } finally {
@@ -1553,7 +1601,24 @@ onUnmounted(() => {
 }
 
 .avatar-wrapper {
+  position: relative;
   transition: all 0.3s cubic-bezier(0.18, 0.89, 0.32, 1.28);
+}
+
+/* 账号在线时的荧光框效果 */
+:deep(.acc-avatar.arco-avatar-square.online-neon) {
+  border: 2.2px solid #00b42a !important;
+  box-shadow: 0 0 10px rgba(0, 180, 42, 0.75), inset 0 0 4px rgba(0, 180, 42, 0.45) !important;
+  animation: neon-pulse 2s infinite alternate ease-in-out;
+}
+
+@keyframes neon-pulse {
+  0% {
+    box-shadow: 0 0 4px rgba(0, 180, 42, 0.45), inset 0 0 1.5px rgba(0, 180, 42, 0.2);
+  }
+  100% {
+    box-shadow: 0 0 14px rgba(0, 180, 42, 0.85), inset 0 0 7px rgba(0, 180, 42, 0.5);
+  }
 }
 
 .account-item:hover .avatar-wrapper {
@@ -1751,6 +1816,17 @@ onUnmounted(() => {
   justify-content: center;
   width: 40px;
   height: 40px;
+  border-radius: 50%;
+  transition: all 0.3s cubic-bezier(0.18, 0.89, 0.32, 1.28);
+}
+
+.status-indicator:hover {
+  background: rgba(255, 255, 255, 0.08);
+  transform: scale(1.15);
+}
+
+.status-indicator:active {
+  transform: scale(0.95);
 }
 
 .status-pulse {

@@ -7,6 +7,11 @@ import { useChatStore } from './chat';
 import request from '@/utils/request';
 import { isDebug } from '@/utils/debug';
 
+// 模块级防抖定时器
+let redisSyncDebounceTimer: any = null;
+let redisWritebackDebounceTimer: any = null;
+
+
 interface Account {
   uuid: string;
   sessionKey: string;
@@ -85,6 +90,9 @@ export const useAccountStore = defineStore('account', {
     // 内存镜像：{ [accountUuid]: { [wxid]: contactDetail } }
     accountContactMaps: {} as Record<string, Record<string, any>>,
     
+    // 账号联系人是否已完全从 Redis/缓存中加载完毕的标记：uuid -> boolean
+    isContactListLoadedMap: {} as Record<string, boolean>,
+    
     // 兼容性计算属性：获取当前活跃账号的联系人 Map
     get contactMap(): Record<string, any> {
       return this.accountContactMaps[this.activeAccountUuid] || {};
@@ -96,17 +104,68 @@ export const useAccountStore = defineStore('account', {
 
   actions: {
     startStatusPolling() {
-      if (this._statusTimer) clearInterval(this._statusTimer);
-      this._statusTimer = setInterval(() => {
-        this.accounts.forEach(acc => {
-          if (acc.sessionKey) this.checkSingleAccountStatus(acc.sessionKey);
-        });
-      }, 30000); // 每 30 秒轮询一次
+      // 🚀 响应最新需求：全局不再使用 30s 定时状态轮询，避免高频冗余接口请求
+      // 离线判断已改为由 WebSocket 断开事件即时触发；上线判断已改为由用户手动点击状态波纹点触发。
+      if (this._statusTimer) {
+        clearInterval(this._statusTimer);
+        this._statusTimer = null;
+      }
     },
     stopStatusPolling() {
       if (this._statusTimer) {
         clearInterval(this._statusTimer);
         this._statusTimer = null;
+      }
+    },
+    async autoSave62Data(license: string) {
+      if (!license) return;
+
+      const matchedAcc = this.accounts.find(a => a.sessionKey === license);
+      const uuid = matchedAcc?.uuid;
+      const isOnline = matchedAcc?.status === 'online';
+
+      // 离线时无法获取 62 数据，直接返回以避免失败的重复请求
+      if (!isOnline) {
+        return;
+      }
+
+      // 只有冷启动且该账户本地没有 62 数据时，才自动请求保存一份，避免重复请求
+      const hasLocalData = localStorage.getItem(`wx_62_data_${license}`) || 
+                           (uuid && localStorage.getItem(`wx_62_data_${uuid}`));
+
+      if (hasLocalData) {
+        if (this.debug.all || this.debug.cache) {
+          console.log(`[AccountStore] 账号 ${uuid || license.substring(0, 8)} 已有本地 62 数据，跳过冷启动自动保存。`);
+        }
+        return;
+      }
+
+      try {
+        console.log('[AccountStore] 冷启动触发自动提取并保存62数据...');
+        const res: any = await loginApi.get62Data(license);
+        let dataVal = '';
+        if (res) {
+          if (typeof res === 'string') {
+            dataVal = res;
+          } else if (typeof res === 'object') {
+            dataVal = res.Data || res.data || '';
+            if (dataVal && typeof dataVal === 'object') {
+              dataVal = dataVal.data || dataVal.Data || JSON.stringify(dataVal);
+            } else if (!dataVal) {
+              dataVal = JSON.stringify(res);
+            }
+          }
+        }
+        if (dataVal) {
+          localStorage.setItem(`wx_62_data_${license}`, dataVal);
+          localStorage.setItem('wx_62_data', dataVal); // 备份
+          if (matchedAcc && matchedAcc.uuid) {
+            localStorage.setItem(`wx_62_data_${matchedAcc.uuid}`, dataVal);
+          }
+          console.log(`[AccountStore] 62数据已成功在冷启动时按账号 (${license}) 隔离保存至本地`);
+        }
+      } catch (err) {
+        console.warn('[AccountStore] 冷启动自动提取62数据失败:', err);
       }
     },
     setGlobalConfig(url: string, adminKey: string, tokenKey: string, debug: any) {
@@ -134,6 +193,28 @@ export const useAccountStore = defineStore('account', {
         this.accountConfigs[this.activeAccountUuid] = { ...current, ...config };
         localStorage.setItem('account_avatar_configs', JSON.stringify(this.accountConfigs));
       }
+
+      // 🚀 如果更新了新 Redis 地址，且当前处于 Redis 极速模式，自动触发防抖读回同步
+      if (config.redisWriteBackUrl !== undefined) {
+        this.triggerDebouncedRedisSync();
+      }
+    },
+
+    triggerDebouncedRedisSync() {
+      const uuid = this.activeAccountUuid;
+      if (!uuid || !this.isRedisMode(uuid)) return;
+      const key = this.accounts.find(a => a.uuid === uuid)?.sessionKey || this.tokenKey;
+      if (!key) return;
+
+      if (redisSyncDebounceTimer) clearTimeout(redisSyncDebounceTimer);
+      redisSyncDebounceTimer = setTimeout(async () => {
+        const config = this.getEffectiveAvatarConfig(uuid);
+        const readUrl = config.redisWriteBackUrl || 'http://192.168.50.99:7377/other/SaveContactToRedis?key=';
+        if (readUrl) {
+          console.log(`[AccountStore:Redis] 检测到新 Redis 地址已填写，自动触发增量读回同步... (账号: ${uuid})`);
+          await this.syncViaRedis(uuid, key);
+        }
+      }, 1000); // 防抖 1 秒，等待用户输入完毕
     },
 
     getEffectiveAvatarConfig(uuid?: string): AvatarConfig {
@@ -170,7 +251,10 @@ export const useAccountStore = defineStore('account', {
       modContacts.forEach(c => {
         const wxid = c.userName?.str || c.UserName?.str || c.wxid || c.userName || c.UserName;
         if (wxid) {
-          map[wxid] = c;
+          map[wxid] = {
+            ...map[wxid],
+            ...c
+          };
           count++;
         }
       });
@@ -229,7 +313,12 @@ export const useAccountStore = defineStore('account', {
           for (const rawMsg of addMsgs) {
             const parsed = MessageParser.parse(rawMsg, uuid);
             // 跳过状态通知等非显示类消息
-            if (parsed.type === 'status_notify' || (!parsed.content && parsed.type === 'unsupported')) continue;
+            if (parsed.type === 'status_notify' || (!parsed.content && parsed.type === 'unsupported')) {
+              if (parsed.type === 'status_notify' && parsed.statusNotifyData?.username) {
+                await chatStore.clearUnread(uuid, parsed.statusNotifyData.username);
+              }
+              continue;
+            }
             await chatStore.addParsedMessage(uuid, parsed, true);
             processedCount++;
           }
@@ -242,8 +331,8 @@ export const useAccountStore = defineStore('account', {
 
       // --- 阶段 B：新 Redis 读回补写联系人（自动启动，在不同服务器） ---
       const config = this.getEffectiveAvatarConfig(uuid);
-      if (config.redisWriteBackUrl) {
-        let readUrl = config.redisWriteBackUrl;
+      let readUrl = config.redisWriteBackUrl || 'http://192.168.50.99:7377/other/SaveContactToRedis?key=';
+      if (readUrl) {
         if (!readUrl.includes('?key=')) {
           readUrl = `${readUrl}?key=${key}`;
         } else if (readUrl.endsWith('?key=')) {
@@ -310,6 +399,10 @@ export const useAccountStore = defineStore('account', {
           console.error('[AccountStore:Redis] 从新 Redis 读回补写联系人失败:', newErr);
         }
       }
+      
+      // 🚀 同步完成，将该账号的联系人加载状态标记为 true，安全解除 Redis 回写锁定！
+      this.isContactListLoadedMap[uuid] = true;
+      console.log(`[AccountStore:Redis] 账号 ${uuid} 的联系人加载完成，已解除 Redis 自动回写锁定。`);
     },
 
     async syncAccountsFromServer() {
@@ -365,6 +458,8 @@ export const useAccountStore = defineStore('account', {
             if (targetAcc.sessionKey) {
               const isOnline = await this.checkSingleAccountStatus(targetAcc.sessionKey);
               if (isOnline) {
+                // 冷启动自动提取并保存62数据
+                this.autoSave62Data(targetAcc.sessionKey);
                 socketManager.registerAccount(targetAcc.uuid, targetAcc.sessionKey);
                 // 根据模式选择数据加载策略
                 if (this.isRedisMode(targetAcc.uuid)) {
@@ -454,6 +549,10 @@ export const useAccountStore = defineStore('account', {
     async fetchProfileAndFixUuid(license: string) {
       try {
         const isOnline = await this.checkSingleAccountStatus(license);
+        if (isOnline) {
+          // 冷启动自动提取并保存62数据
+          this.autoSave62Data(license);
+        }
 
         const res: any = await loginApi.getProfile(license);
         console.log(`[AccountStore] GetProfile 响应 (${license.substring(0,8)}...):`, res);
@@ -577,9 +676,9 @@ export const useAccountStore = defineStore('account', {
         isPlaceholder: false // 清除占位标记
       };
 
-      // 🚀 Redis 极速模式下，自动触发单个更新联系人回写到 Redis，持久化取代 IndexedDB
+      // 🚀 Redis 极速模式下，自动触发防抖全量回写到 Redis，持久化取代 IndexedDB (安全去重，防止单个写覆盖)
       if (this.isRedisMode(targetUuid)) {
-        this.saveSingleContactToRedis(targetUuid, wxid);
+        this.triggerDebouncedRedisWriteback(targetUuid);
       } else {
         // 常规模式：写入 IndexedDB 缓存
         contactCache.set(wxid, this.accountContactMaps[targetUuid][wxid], targetUuid);
@@ -635,8 +734,10 @@ export const useAccountStore = defineStore('account', {
           convs[convIdx] = conv;
           chatStore.accountConversations[targetUuid] = convs;
           
-          // 同时持久化会话更新到 DB
-          contactCache.saveConversation(targetUuid, JSON.parse(JSON.stringify(conv)));
+          // 同时持久化会话更新到 DB（Redis 极速模式下跳过）
+          if (!this.isRedisMode(targetUuid)) {
+            contactCache.saveConversation(targetUuid, JSON.parse(JSON.stringify(conv)));
+          }
         }
       }
     },
@@ -765,6 +866,7 @@ export const useAccountStore = defineStore('account', {
         
         // 自动触发详情补全逻辑已移除，改为懒加载模式
         this.lastSyncTimeMap[uuid] = Date.now();
+        this.isContactListLoadedMap[uuid] = true; // 🚀 也解除锁定
         console.log(`[AccountStore] 通讯录索引同步完成 (账号: ${uuid})`);
       } catch (err) {
         console.error('同步流程异常:', err);
@@ -879,28 +981,26 @@ export const useAccountStore = defineStore('account', {
       } catch (e) {}
     },
 
-    async saveSingleContactToRedis(uuid: string, wxid: string) {
-      const key = this.accounts.find(a => a.uuid === uuid)?.sessionKey;
-      if (!key) return;
-      const contact = this.accountContactMaps[uuid]?.[wxid];
-      if (!contact) return;
+    triggerDebouncedRedisWriteback(uuid: string) {
+      if (!this.isRedisMode(uuid)) return;
       
-      const config = this.getEffectiveAvatarConfig(uuid);
-      let writeBackUrl = config.redisWriteBackUrl || 'http://192.168.50.99:7377/other/SaveContactToRedis?key=';
-      if (!writeBackUrl.includes('?key=')) {
-        writeBackUrl = `${writeBackUrl}?key=${key}`;
-      } else if (writeBackUrl.endsWith('?key=')) {
-        writeBackUrl = `${writeBackUrl}${key}`;
+      // 🔴 核心安全红线：如果当前账号的联系人列表尚未加载完毕，绝不准回写，防止空内存覆盖 Redis 完整数据！
+      if (!this.isContactListLoadedMap[uuid]) {
+        if (isDebug('cache')) {
+          console.warn(`[AccountStore:Redis] 拒绝自动回写：账号 ${uuid} 的联系人尚未完全加载，防止覆盖冲掉 Redis 完整数据！`);
+        }
+        return;
       }
 
-      if (isDebug('cache')) {
-        console.log(`[AccountStore:Redis] 自动回写联系人 ${wxid} 详情到 Redis: ${writeBackUrl}`);
-      }
-      try {
-        await request.post(writeBackUrl, { ModContacts: [contact] });
-      } catch (err) {
-        console.error(`[AccountStore:Redis] 自动回写联系人 ${wxid} 失败:`, err);
-      }
+      if (redisWritebackDebounceTimer) clearTimeout(redisWritebackDebounceTimer);
+      redisWritebackDebounceTimer = setTimeout(async () => {
+        console.log(`[AccountStore:Redis] 触发自动防抖全量回写 (账号: ${uuid})...`);
+        try {
+          await this.saveAllContactsToRedis(uuid);
+        } catch (err) {
+          console.error(`[AccountStore:Redis] 自动防抖全量回写失败:`, err);
+        }
+      }, 3000); // 3 秒内无新变更则执行一次全量回写
     },
 
     async saveAllContactsToRedis(uuid: string) {

@@ -88,9 +88,12 @@
               <a-input-password v-model="deviceForm.Password" placeholder="请输入密码" />
             </a-form-item>
             <a-form-item field="LoginData" label="62 数据" help="62数据为ipad微信登录环境数据">
+              <template #extra v-if="hasLocal62Data">
+                <a-link size="mini" @click="fillLocal62Data" style="float: right; padding: 0;">使用本地保存的62数据</a-link>
+              </template>
               <a-textarea 
                 v-model="deviceForm.LoginData" 
-                placeholder="请输入 62 数据" 
+                placeholder="已保存的62数据将自动加载，或手动输入" 
                 :auto-size="{ minRows: 2, maxRows: 4 }"
               />
             </a-form-item>
@@ -100,19 +103,101 @@
           </a-form>
         </div>
       </a-tab-pane>
+
+      <a-tab-pane key="extract62" title="提取62数据">
+        <div class="a16-login-box">
+          <a-form :model="extractForm" layout="vertical" @submit="handleExtract62">
+            <a-form-item field="License" label="授权码 (License)" required>
+              <a-input v-model="extractForm.License" placeholder="请输入授权码" />
+              <template #extra v-if="accountStore.accounts.length > 0">
+                <div style="margin-top: 8px;">
+                  <span style="color: #86909c; font-size: 12px; margin-right: 8px;">快速选择在线账号:</span>
+                  <a-space wrap>
+                    <a-tag 
+                      v-for="acc in accountStore.accounts.filter(a => a.status === 'online' && a.sessionKey)" 
+                      :key="acc.uuid" 
+                      color="arcoblue" 
+                      style="cursor: pointer;"
+                      @click="extractForm.License = acc.sessionKey"
+                    >
+                      {{ acc.nickname }}
+                    </a-tag>
+                  </a-space>
+                </div>
+              </template>
+            </a-form-item>
+            <a-button type="primary" html-type="submit" :loading="extractLoading" long>
+              开始提取并保存
+            </a-button>
+          </a-form>
+          
+          <div v-if="extractedData" class="result-panel" style="margin-top: 20px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+              <span style="color: #07c160; font-weight: bold; font-size: 12px;">提取成功（已自动保存到浏览器）：</span>
+              <a-link size="mini" @click="copyExtractedData">
+                <template #icon><icon-copy /></template>
+                复制数据
+              </a-link>
+            </div>
+            <pre style="max-height: 120px; overflow-y: auto; font-size: 12px; word-break: break-all; white-space: pre-wrap;">{{ extractedData }}</pre>
+          </div>
+        </div>
+      </a-tab-pane>
+
+      <a-tab-pane key="wakeup" title="唤醒登录">
+        <div class="a16-login-box">
+          <a-form :model="wakeupForm" layout="vertical" @submit="handleWakeup">
+            <a-form-item field="License" label="授权码 (License)" required>
+              <a-input v-model="wakeupForm.License" placeholder="请输入授权码" />
+              <template #extra v-if="accountStore.accounts.length > 0">
+                <div style="margin-top: 8px;">
+                  <span style="color: #86909c; font-size: 12px; margin-right: 8px;">快速选择账号:</span>
+                  <a-space wrap>
+                    <a-tag 
+                      v-for="acc in accountStore.accounts.filter(a => a.sessionKey)" 
+                      :key="acc.uuid" 
+                      :color="acc.status === 'online' ? 'green' : 'gray'" 
+                      style="cursor: pointer;"
+                      @click="wakeupForm.License = acc.sessionKey"
+                    >
+                      {{ acc.nickname }} ({{ acc.status === 'online' ? '在线' : '离线' }})
+                    </a-tag>
+                  </a-space>
+                </div>
+              </template>
+            </a-form-item>
+            <a-button type="primary" html-type="submit" :loading="wakeupLoading" long>
+              开始发送唤醒指令
+            </a-button>
+          </a-form>
+          
+          <div v-if="wakeupResult" class="result-panel" style="margin-top: 20px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+              <span style="color: #07c160; font-weight: bold; font-size: 12px;">响应结果：</span>
+              <a-link size="mini" @click="copyWakeupResult">
+                <template #icon><icon-copy /></template>
+                复制结果
+              </a-link>
+            </div>
+            <pre style="max-height: 120px; overflow-y: auto; font-size: 12px; word-break: break-all; white-space: pre-wrap;">{{ wakeupResult }}</pre>
+          </div>
+        </div>
+      </a-tab-pane>
     </a-tabs>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, onUnmounted, watch } from 'vue';
+import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue';
 import { loginApi } from '@/api/modules/im';
+import { useAccountStore } from '@/store/account';
 import { Message } from '@arco-design/web-vue';
 import {
   IconRefresh,
   IconThunderbolt,
   IconQrcode,
-  IconSafe
+  IconSafe,
+  IconCopy
 } from '@arco-design/web-vue/es/icon';
 
 const props = defineProps({
@@ -157,6 +242,169 @@ const deviceForm = reactive({
   LoginData: '',
   Key: props.assignedKey
 });
+
+const accountStore = useAccountStore();
+
+// --- 提取62数据相关 ---
+const extractLoading = ref(false);
+const extractedData = ref('');
+const extractForm = reactive({
+  License: props.assignedKey || ''
+});
+
+const hasLocal62Data = computed(() => {
+  return !!(
+    (deviceForm.UserName && localStorage.getItem(`wx_62_data_${deviceForm.UserName}`)) ||
+    (props.assignedKey && localStorage.getItem(`wx_62_data_${props.assignedKey}`)) ||
+    localStorage.getItem('wx_62_data')
+  );
+});
+
+const fillLocal62Data = () => {
+  const saved = (deviceForm.UserName && localStorage.getItem(`wx_62_data_${deviceForm.UserName}`)) || 
+                (props.assignedKey && localStorage.getItem(`wx_62_data_${props.assignedKey}`));
+  if (saved) {
+    deviceForm.LoginData = saved;
+    Message.success('已自动填充该账号的本地62数据');
+  } else {
+    const general = localStorage.getItem('wx_62_data');
+    if (general) {
+      deviceForm.LoginData = general;
+      Message.success('未找到该账号的专用数据，已填充默认62数据');
+    } else {
+      Message.warning('未找到任何本地62数据');
+    }
+  }
+};
+
+// 自动填充观察器，支持当输入 UserName 或 key 时自动拉取该账户专用 62 数据
+watch(
+  [() => deviceForm.UserName, () => props.assignedKey],
+  ([newUsername, newKey]) => {
+    if (!deviceForm.LoginData) {
+      const saved = (newUsername && localStorage.getItem(`wx_62_data_${newUsername}`)) || 
+                    (newKey && localStorage.getItem(`wx_62_data_${newKey}`));
+      if (saved) {
+        deviceForm.LoginData = saved;
+      }
+    }
+  },
+  { immediate: true }
+);
+
+const handleExtract62 = async () => {
+  if (!extractForm.License) return Message.warning('请输入或选择授权码');
+  extractLoading.value = true;
+  extractedData.value = '';
+  try {
+    Message.info('开始提取62数据...');
+    const res: any = await loginApi.get62Data(extractForm.License);
+    console.log('[Login:Get62Data]', res);
+    
+    // 兼容解析 data/Data 字段并保存
+    let dataVal = '';
+    if (res) {
+      if (typeof res === 'string') {
+        dataVal = res;
+      } else if (typeof res === 'object') {
+        dataVal = res.Data || res.data || '';
+        if (dataVal && typeof dataVal === 'object') {
+          dataVal = dataVal.data || dataVal.Data || JSON.stringify(dataVal);
+        } else if (!dataVal) {
+          dataVal = JSON.stringify(res);
+        }
+      }
+    }
+
+    if (dataVal) {
+      extractedData.value = dataVal;
+      
+      // 账户隔离保存
+      localStorage.setItem(`wx_62_data_${extractForm.License}`, dataVal);
+      localStorage.setItem('wx_62_data', dataVal); // 备份通用
+      
+      const matchedAcc = accountStore.accounts.find(a => a.sessionKey === extractForm.License);
+      if (matchedAcc && matchedAcc.uuid) {
+        localStorage.setItem(`wx_62_data_${matchedAcc.uuid}`, dataVal);
+      }
+      
+      Message.success('62数据提取成功，已按账号隔离保存至本地');
+    } else {
+      Message.warning('提取成功，但数据为空');
+    }
+  } catch (err: any) {
+    Message.error(err.message || '提取失败，请检查授权码是否正确或是否在线');
+  } finally {
+    extractLoading.value = false;
+  }
+};
+
+const copyExtractedData = async () => {
+  if (!extractedData.value) return;
+  try {
+    await navigator.clipboard.writeText(extractedData.value);
+    Message.success('已复制到剪贴板');
+  } catch (err) {
+    // 兼容旧浏览器
+    const textarea = document.createElement('textarea');
+    textarea.value = extractedData.value;
+    document.body.appendChild(textarea);
+    textarea.select();
+    try {
+      document.execCommand('copy');
+      Message.success('已复制到剪贴板');
+    } catch (e) {
+      Message.error('复制失败，请手动选择复制');
+    }
+    document.body.removeChild(textarea);
+  }
+};
+
+// --- 唤醒登录相关 ---
+const wakeupLoading = ref(false);
+const wakeupResult = ref('');
+const wakeupForm = reactive({
+  License: props.assignedKey || ''
+});
+
+const handleWakeup = async () => {
+  if (!wakeupForm.License) return Message.warning('请输入或选择授权码');
+  wakeupLoading.value = true;
+  wakeupResult.value = '';
+  try {
+    Message.info('正在发送唤醒指令...');
+    const res: any = await loginApi.wakeUpLogin(wakeupForm.License);
+    console.log('[Login:WakeUpLogin]', res);
+    
+    wakeupResult.value = typeof res === 'object' ? JSON.stringify(res, null, 2) : String(res);
+    Message.success('唤醒指令已成功发送');
+  } catch (err: any) {
+    Message.error(err.message || '唤醒指令发送失败');
+    wakeupResult.value = `Error: ${err.message || err}`;
+  } finally {
+    wakeupLoading.value = false;
+  }
+};
+
+const copyWakeupResult = async () => {
+  if (!wakeupResult.value) return;
+  try {
+    await navigator.clipboard.writeText(wakeupResult.value);
+    Message.success('已复制到剪贴板');
+  } catch (err) {
+    const textarea = document.createElement('textarea');
+    textarea.value = wakeupResult.value;
+    document.body.appendChild(textarea);
+    textarea.select();
+    try {
+      document.execCommand('copy');
+      Message.success('已复制到剪贴板');
+    } catch (e) {
+      Message.error('复制失败');
+    }
+    document.body.removeChild(textarea);
+  }
+};
 
 // --- 链接状态相关 ---
 const connectCount = ref(0);
@@ -294,6 +542,12 @@ const stopPolling = () => { if (timer) clearInterval(timer); timer = null; };
 onMounted(() => {
   fetchConnectStatus();
   // 不再自动获取二维码
+  
+  // 自动填充本地保存的62数据
+  const saved62 = localStorage.getItem('wx_62_data');
+  if (saved62) {
+    deviceForm.LoginData = saved62;
+  }
 });
 onUnmounted(() => stopPolling());
 </script>
