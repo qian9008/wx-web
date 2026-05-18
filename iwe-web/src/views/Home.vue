@@ -706,16 +706,25 @@ const activeAccountOnlineStatus = computed(() => {
   return acc?.status === 'online' ? '在线' : '离线';
 });
 
-const handleSwitchAccount = (uuid: string) => {
+const handleSwitchAccount = async (uuid: string) => {
   if (accountStore.activeAccountUuid === uuid) return;
   pendingAccountUuid.value = uuid;
-  // 让 Vue 先完成当前事件循环的渲染（更新选中态的高亮）
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      accountStore.activeAccountUuid = uuid;
-      pendingAccountUuid.value = '';
-    });
-  });
+  
+  try {
+    // 🚀 核心控制：在切换 activeAccountUuid 之前，预先并行加载目标账号的联系人与会话缓存进入内存
+    // 确保切换后所有依赖 activeAccountUuid 的 computed 属性能够直接同步且完美地加载渲染，杜绝 UI 抖动与临时降级 placeholder 的尴尬
+    await Promise.all([
+      accountStore.loadContactsFromCache(uuid),
+      chatStore.loadConversations(uuid)
+    ]);
+  } catch (err) {
+    console.warn('[Home] 切换账号时预加载缓存失败:', err);
+  } finally {
+    accountStore.activeAccountUuid = uuid;
+    pendingAccountUuid.value = '';
+    // 自动重置当前聊天，防跨账号会话串屏
+    chatStore.activeId = '';
+  }
 };
 
 const handleManualCheckOnline = async (acc: any) => {
@@ -810,10 +819,33 @@ const handleAccountStatusActionForCurrent = async (action: string) => {
   try {
     let res: any;
     if (action === 'status') {
+      // 触发并同步 Store 在线状态，自动激活数据长连同步管道
+      await accountStore.checkSingleAccountStatus(acc.sessionKey);
       res = await loginApi.getOnlineStatus(acc.sessionKey);
     } else if (action === 'wakeup') {
       res = await loginApi.wakeUpLogin(acc.sessionKey);
-      Message.success('唤醒指令已发送');
+      Message.info('唤醒指令已发送，正在尝试自动在线连接与状态校验...');
+      
+      // 开启高频短轮询（每 2 秒一次，最多 5 次）
+      let checkCount = 0;
+      const maxChecks = 5;
+      const checkInterval = setInterval(async () => {
+        checkCount++;
+        try {
+          const isOnline = await accountStore.checkSingleAccountStatus(acc.sessionKey);
+          if (isOnline) {
+            clearInterval(checkInterval);
+            Message.success(`账号 [${acc.nickname || '微信'}] 唤醒成功！已自动激活在线模式。`);
+          } else if (checkCount >= maxChecks) {
+            clearInterval(checkInterval);
+            Message.warning(`唤醒指令已发送，但检测到账号仍处于离线状态。`);
+          }
+        } catch (e) {
+          if (checkCount >= maxChecks) {
+            clearInterval(checkInterval);
+          }
+        }
+      }, 2000);
     }
     currentAccountResult.value = JSON.stringify(res, null, 2);
   } catch (err: any) {
@@ -1356,13 +1388,23 @@ const getContactAvatar = (c: any) => {
 
 // 账号头像：优先从联系人缓存取（已有本地 blob），回退到 acc.avatar
 const getAccountAvatar = (acc: any) => {
-  // 先查联系人缓存（联系人同步时已经把自己的头像缓存到本地了）
-  const contact = accountStore.contactMap[acc.uuid];
-  if (contact) {
-    const cached = getContactAvatar(contact);
+  if (!acc) return '';
+  
+  // 🚀 策略 1：尝试从它自己专有的联系人缓存映射中查找自己的头像（高保真、最精准隔离）
+  const selfContact = accountStore.accountContactMaps[acc.uuid]?.[acc.uuid];
+  if (selfContact) {
+    const cached = getContactAvatar(selfContact);
     if (cached) return cached;
   }
-  // 回退到 acc.avatar（可能是 blob URL 或原始 URL）
+  
+  // 🚀 策略 2：尝试从当前活跃账号的联系人列表中查找该账号的头像（关系链检索，重要后备，支持冷启动及其他离线槽位展示）
+  const activeContact = accountStore.contactMap[acc.uuid];
+  if (activeContact) {
+    const cached = getContactAvatar(activeContact);
+    if (cached) return cached;
+  }
+  
+  // 🚀 策略 3：终极回退到 acc.avatar（可能是 blob URL 或原始 URL）
   if (acc.avatar) {
     return accountStore.avatarBlobMap[acc.avatar] || acc.avatar;
   }

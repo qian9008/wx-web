@@ -138,8 +138,24 @@ class GlobalSocketManager {
   }
 
   private handleMessage(userName: string, msg: any) {
+    if (!msg) return;
+
     const chatStore = useChatStore();
     const accountStore = useAccountStore();
+
+    // 【核心拦截】如果是一个独立的联系人/群聊信息更新（并非消息结构），更新联系人缓存并拦截，不作为消息展示
+    const isContactUpdate = (msg.userName || msg.UserName) && 
+                            (msg.pyinitial || msg.pyInitial || msg.quanPin || msg.imgFlag !== undefined || msg.contactType !== undefined);
+    if (isContactUpdate) {
+      const wxid = msg.userName?.str || msg.UserName?.str || msg.wxid || msg.userName || msg.UserName;
+      if (wxid && typeof wxid === 'string') {
+        if (isDebug('socket')) {
+          console.log(`[Socket:${userName}] 收到独立的联系人/群聊属性变更: ${wxid} (${msg.nickName?.str || ''})`);
+        }
+        accountStore.updateContact(wxid, msg, userName);
+      }
+      return;
+    }
 
     const msgId = msg.NewMsgId || msg.MsgId || msg.msg_id || msg.new_msg_id || msg.UUID;
 

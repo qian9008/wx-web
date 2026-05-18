@@ -377,11 +377,46 @@ const handleWakeup = async () => {
     console.log('[Login:WakeUpLogin]', res);
     
     wakeupResult.value = typeof res === 'object' ? JSON.stringify(res, null, 2) : String(res);
-    Message.success('唤醒指令已成功发送');
+    Message.info('唤醒指令已成功发送，正在验证在线状态...');
+    
+    // 开启在线检测循环环路（每 2 秒一次，最多 5 次）
+    let checkCount = 0;
+    const maxChecks = 5;
+    const checkInterval = setInterval(async () => {
+      checkCount++;
+      try {
+        const isOnline = await accountStore.checkSingleAccountStatus(wakeupForm.License);
+        if (isOnline) {
+          clearInterval(checkInterval);
+          wakeupLoading.value = false;
+          Message.success('账号唤醒登录成功！正在为您激活并进入主控台...');
+          
+          // 查询获取详细的 wxid 和昵称传给 success 事件，使 UI 自动推进
+          const statusRes: any = await loginApi.getOnlineStatus(wakeupForm.License);
+          const data = statusRes?.Data || statusRes;
+          const realWxid = data?.wxid || data?.uuid || wakeupForm.License;
+          const nick = data?.nickname || data?.Nickname || '已唤醒账号';
+
+          emit('success', {
+            uuid: realWxid,
+            sessionKey: wakeupForm.License,
+            nickname: nick
+          });
+        } else if (checkCount >= maxChecks) {
+          clearInterval(checkInterval);
+          wakeupLoading.value = false;
+          Message.warning('唤醒指令已发送，但账号检测未上线，请稍后手动查询状态。');
+        }
+      } catch (e) {
+        if (checkCount >= maxChecks) {
+          clearInterval(checkInterval);
+          wakeupLoading.value = false;
+        }
+      }
+    }, 2000);
   } catch (err: any) {
     Message.error(err.message || '唤醒指令发送失败');
     wakeupResult.value = `Error: ${err.message || err}`;
-  } finally {
     wakeupLoading.value = false;
   }
 };
@@ -463,15 +498,16 @@ const startPolling = () => {
   timer = setInterval(async () => {
     try {
       const res: any = await loginApi.checkLogin(pollKey);
-      if (res && res.Status === 2) {
+      const stateVal = res && (res.state !== undefined ? res.state : res.Status);
+      if (res && stateVal === 2) {
           stopPolling();
           Message.success('登录成功');
           emit('success', {
-              uuid: uuid.value, 
-              sessionKey: res.Key || props.assignedKey,
-              nickname: res.Nickname || '新账号'
+              uuid: res.wxid || res.uuid || res.Uuid || uuid.value, 
+              sessionKey: res.Key || res.key || pollKey || props.assignedKey,
+              nickname: res.Nickname || res.nick_name || res.nickname || '新账号'
           });
-      } else if (res && res.Status === 1) {
+      } else if (res && stateVal === 1) {
           statusMsg.value = '扫码成功，请在手机上确认';
       }
     } catch (err) {}

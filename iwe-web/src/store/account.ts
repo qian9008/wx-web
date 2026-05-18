@@ -6,6 +6,7 @@ import { contactCache } from '@/utils/contactCache';
 import { useChatStore } from './chat';
 import request from '@/utils/request';
 import { isDebug } from '@/utils/debug';
+import { Message } from '@arco-design/web-vue';
 
 // 模块级防抖定时器
 let redisSyncDebounceTimer: any = null;
@@ -527,11 +528,35 @@ export const useAccountStore = defineStore('account', {
             const wasOffline = acc.status === 'offline';
             acc.status = isOnline ? 'online' : 'offline';
             
-            // 如果轮询发现账号从离线变成了在线（且有了真实的 uuid，排除初始状态）
-            if (wasOffline && isOnline && acc.uuid && acc.uuid !== license) {
-              console.log(`[AccountStore] 发现账号 ${acc.uuid} 恢复在线，自动恢复数据同步`);
-              socketManager.registerAccount(acc.uuid, acc.sessionKey);
-              // 注意：这里不再自动触发全量同步，由外部调用方根据需要决定
+            // 如果账号从离线变成了在线，自动激活在线模式并开始极速同步，无需刷新
+            if (wasOffline && isOnline) {
+              console.log(`[AccountStore] 检测到账号 [${acc.nickname || '微信'}] 从离线恢复在线，自动启动激活流程...`);
+              
+              // 自动弹出友好提示
+              Message.success({
+                content: `检测到账号 [${acc.nickname || '微信'}] 已成功上线！已自动激活在线模式。`,
+                duration: 4
+              });
+
+              // 1. 冷启动自动提取并保存62数据
+              this.autoSave62Data(license);
+
+              // 2. 根据账号 UUID 阶段选择激活路径
+              if (acc.uuid && acc.uuid !== license) {
+                // 已有真实微信 ID 的老账号上线：直接建立长连接并开始数据极速同步
+                socketManager.registerAccount(acc.uuid, license);
+                if (this.isRedisMode(acc.uuid)) {
+                  await this.syncViaRedis(acc.uuid, license);
+                } else {
+                  await this.loadContactsFromCache(acc.uuid);
+                  await this.syncFullContactList(acc.uuid, license);
+                }
+              } else {
+                // 尚未获取真实微信 ID 的新槽位上线：自动通过 fetchProfileAndFixUuid 解析并迁移数据
+                this.fetchProfileAndFixUuid(license).catch(err => {
+                  console.error('[AccountStore] 自动解析激活失败:', err);
+                });
+              }
             }
           }
           return isOnline;
@@ -607,6 +632,16 @@ export const useAccountStore = defineStore('account', {
               this.accounts[accIndex].avatar = await this.getAvatarUrl(rawAvatar) || rawAvatar;
             }
             
+            // 🚀 核心优化：将账号自身信息作为一条联系人数据强制写入本地 DB 与内存缓存中，保证 getAccountAvatar 始终完美命中自身头像
+            const selfProfile = {
+              userName: { str: realWxid },
+              nickName: { str: realNick || '微信用户' },
+              smallHeadImgUrl: realAvatar,
+              headImgUrl: realAvatar,
+              contactType: 0
+            };
+            await this.updateContact(realWxid, selfProfile, realWxid);
+            
             if (this.activeAccountUuid === oldUuid || this.activeAccountUuid === license) {
               this.activeAccountUuid = realWxid;
             }
@@ -620,11 +655,15 @@ export const useAccountStore = defineStore('account', {
               // 这里 registerAccount 内部会自己处理 wxid 查找，但我们已经知道 realWxid 了
               socketManager.registerAccount(realWxid, license);
               
-              // 6. 重新加载新 ID 的缓存
-              await this.loadContactsFromCache(realWxid);
-              
-              // 7. 触发新 ID 的全量同步判断
-              this.syncFullContactList(realWxid, license);
+              // 根据模式选择数据加载策略
+              if (this.isRedisMode(realWxid)) {
+                await this.syncViaRedis(realWxid, license);
+              } else {
+                // 6. 重新加载新 ID 的缓存
+                await this.loadContactsFromCache(realWxid);
+                // 7. 触发新 ID 的全量同步判断
+                this.syncFullContactList(realWxid, license);
+              }
             } else {
               console.log(`[AccountStore] 账号 ${realWxid} 离线，跳过数据同步`);
             }
