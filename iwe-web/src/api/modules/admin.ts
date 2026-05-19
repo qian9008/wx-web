@@ -21,4 +21,10 @@ export const adminApi = {
   
   // 删除授权码
   deleteAuthKey: (data: { Key: string, Opt: number }) => request.post('/admin/DeleteAuthKey', data),
+
+  // 获取回调地址
+  getCallBackUrl: (adminKey: string, data: { Key: string }) => request.post(`/admin/GetCallBackUrl?key=${adminKey}`, data),
+
+  // 设置回调地址
+  setCallBackUrl: (adminKey: string, data: { Key: string, Url: string }) => request.post(`/admin/SetCallBackUrl?key=${adminKey}`, data),
 };

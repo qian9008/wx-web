@@ -276,6 +276,8 @@
               </div>
               <div v-else class="content">{{ msg.content }}</div>
               <div v-if="msg.isRevoked" class="revoked-tag">消息已撤回</div>
+              <!-- 消息发送时间戳 -->
+              <div class="msg-time">{{ formatTime(msg.time) }}</div>
             </div>
           </div>
         </div>
@@ -399,6 +401,21 @@
                     <div style="padding: 10px; width: 220px;">
                       <a-input v-model="adminAuthKey" placeholder="授权码 (Auth Key)" size="small" style="margin-bottom: 8px;" />
                       <a-button type="primary" status="danger" size="small" long @click="handleAdminAction('delete')">确认删除</a-button>
+                    </div>
+                  </template>
+                </a-popover>
+                <a-button type="outline" size="small" @click="handleAdminAction('getCallback')">
+                  获取回调地址
+                </a-button>
+                <a-popover position="bottom" trigger="click">
+                  <a-button type="outline" size="small" status="success">
+                    设置回调地址
+                  </a-button>
+                  <template #content>
+                    <div style="padding: 10px; width: 260px;">
+                      <a-input v-model="adminAuthKey" placeholder="授权码 (Auth Key)" size="small" style="margin-bottom: 8px;" />
+                      <a-input v-model="adminCallbackUrl" placeholder="回调地址 (Url)" size="small" style="margin-bottom: 8px;" />
+                      <a-button type="primary" size="small" long @click="handleAdminAction('setCallback')">确认设置</a-button>
                     </div>
                   </template>
                 </a-popover>
@@ -776,7 +793,8 @@ const baseConfigForm = reactive({
 
 // 管理功能相关
 const adminAuthKey = ref('');
-const adminDays = ref(30);
+const adminDays = ref(365);
+const adminCallbackUrl = ref('');
 const adminActionResult = ref('');
 const adminActionData = ref<any>(null);
 
@@ -803,6 +821,24 @@ const handleAdminAction = async (type: string) => {
         Opt: 0 
       });
       Message.success('删除成功');
+    } else if (type === 'getCallback') {
+      if (!adminAuthKey.value) return Message.warning('请输入授权码');
+      const key = baseConfigForm.adminKey || accountStore.adminKey;
+      if (!key) return Message.warning('管理密钥 (ADMIN_KEY) 不能为空');
+      res = await adminApi.getCallBackUrl(key, { 
+        Key: adminAuthKey.value 
+      });
+      Message.success('获取成功');
+    } else if (type === 'setCallback') {
+      if (!adminAuthKey.value) return Message.warning('请输入授权码');
+      if (!adminCallbackUrl.value) return Message.warning('请输入回调地址');
+      const key = baseConfigForm.adminKey || accountStore.adminKey;
+      if (!key) return Message.warning('管理密钥 (ADMIN_KEY) 不能为空');
+      res = await adminApi.setCallBackUrl(key, { 
+        Key: adminAuthKey.value,
+        Url: adminCallbackUrl.value
+      });
+      Message.success('设置成功');
     }
     adminActionData.value = res;
     adminActionResult.value = JSON.stringify(res, null, 2);
@@ -1997,8 +2033,31 @@ onUnmounted(() => {
 .msg-row { display: flex; margin-bottom: 20px; }
 .msg-row.self { flex-direction: row-reverse; }
 .msg-avatar { flex-shrink: 0; }
-.msg-bubble { max-width: 70%; padding: 10px 14px; border-radius: 8px; background: #2e2e2e; margin: 0 12px; }
+.msg-bubble {
+  max-width: 70%;
+  padding: 10px 14px 6px 14px;
+  border-radius: 8px;
+  background: #2e2e2e;
+  margin: 0 12px;
+  display: flex;
+  flex-direction: column;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  word-break: break-all;
+  white-space: pre-wrap;
+}
 .self .msg-bubble { background: #268d44; color: #fff; }
+.msg-time {
+  align-self: flex-end;
+  font-size: 11px;
+  color: #86909c;
+  margin-top: 4px;
+  user-select: none;
+  line-height: 1;
+}
+.self .msg-time {
+  color: rgba(255, 255, 255, 0.7);
+}
 .input-section { height: 160px; border-top: 1px solid #2e2e2e; display: flex; flex-direction: column; }
 .input-tools { height: 40px; display: flex; padding: 0 15px; gap: 15px; align-items: center; color: #86909c; }
 .input-section textarea { flex: 1; border: none; padding: 10px 15px; background: transparent; color: #e5e6eb; outline: none; resize: none; }
