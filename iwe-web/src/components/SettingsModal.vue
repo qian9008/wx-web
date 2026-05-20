@@ -322,6 +322,7 @@
               >
                 <span class="log-time">[{{ log.time }}]</span>
                 <span class="log-type">[{{ log.type.toUpperCase() }}]</span>
+                <span v-if="log.count && log.count > 1" class="log-badge">x{{ log.count }}</span>
                 <pre class="log-text">{{ log.text }}</pre>
               </div>
             </div>
@@ -1011,6 +1012,24 @@ onMounted(() => {
 .log-type {
   font-weight: bold;
   flex-shrink: 0;
+}
+.log-badge {
+  background: #ff9900;
+  color: #000000;
+  font-size: 10px;
+  font-weight: bold;
+  padding: 0px 5px;
+  border-radius: 10px;
+  margin-left: 2px;
+  flex-shrink: 0;
+  display: inline-block;
+  line-height: 1.4;
+  vertical-align: middle;
+  animation: badge-pop 0.15s cubic-bezier(0.175, 0.885, 0.32, 1.275) both;
+}
+@keyframes badge-pop {
+  0% { transform: scale(0.6); }
+  100% { transform: scale(1); }
 }
 .log-text {
   margin: 0;
