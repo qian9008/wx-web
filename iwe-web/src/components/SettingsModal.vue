@@ -116,14 +116,35 @@
 
         <a-tab-pane v-if="context === 'global'" key="2" title="数据管理">
           <div class="data-mgmt">
+            <div class="scan-all-action" style="margin-bottom: 15px;">
+              <a-button type="primary" long :loading="scanLoading.all" @click="handleScanAll">
+                <template #icon><icon-search /></template>
+                一键扫描所有数据占用
+              </a-button>
+            </div>
+
             <div class="stat-group">
               <div class="stat-item">
                 <span class="label">逻辑预估占用:</span>
-                <span class="value">{{ cacheStats.estimatedSize }}</span>
+                <span class="value">
+                  <template v-if="isScanned.estimatedSize">
+                    {{ cacheStats.estimatedSize }}
+                  </template>
+                  <template v-else>
+                    <a-button type="text" size="mini" :loading="scanLoading.estimatedSize" @click="handleScanSingle('estimatedSize')">点击扫描</a-button>
+                  </template>
+                </span>
               </div>
               <div class="stat-item">
                 <span class="label">实际磁盘占用:</span>
-                <span class="valueHighlight">{{ cacheStats.actualSize }}</span>
+                <span class="valueHighlight">
+                  <template v-if="isScanned.actualSize">
+                    {{ cacheStats.actualSize }}
+                  </template>
+                  <template v-else>
+                    <a-button type="text" size="mini" :loading="scanLoading.actualSize" @click="handleScanSingle('actualSize')">点击扫描</a-button>
+                  </template>
+                </span>
               </div>
             </div>
             
@@ -140,38 +161,54 @@
 
               <div class="store-item">
                  <div class="store-info">
-                   <span class="name">本地头像数据 (avatars)</span>
-                   <span class="count">{{ cacheStats.avatarCount }} 张</span>
+                   <span class="name">本地头像 data (avatars)</span>
+                   <span class="count">
+                     <template v-if="isScanned.avatars">{{ cacheStats.avatarCount }} 张</template>
+                     <template v-else>未扫描</template>
+                   </span>
                  </div>
-                 <a-popconfirm content="确定清空本地头像缓存吗？" @ok="handleClearStore('avatars')">
-                   <a-button type="outline" size="mini" status="warning">清理</a-button>
-                 </a-popconfirm>
+                 <a-space>
+                   <a-button v-if="!isScanned.avatars" type="outline" size="mini" :loading="scanLoading.avatars" @click="handleScanSingle('avatars')">扫描</a-button>
+                   <a-popconfirm content="确定清空本地头像缓存吗？" @ok="handleClearStore('avatars')">
+                     <a-button type="outline" size="mini" status="warning" :loading="clearLoading.avatars">清理</a-button>
+                   </a-popconfirm>
+                 </a-space>
                </div>
 
                <div class="store-item">
                 <div class="store-info">
                   <span class="name">联系人 (contacts)</span>
-                  <span class="count">{{ cacheStats.contactCount }} 条</span>
+                  <span class="count">
+                    <template v-if="isScanned.contacts">{{ cacheStats.contactCount }} 条</template>
+                    <template v-else>未扫描</template>
+                  </span>
                 </div>
-                <a-popconfirm content="确定清空联系人缓存吗？" @ok="handleClearStore('contacts')">
-                  <a-button type="outline" size="mini" status="warning">清理</a-button>
-                </a-popconfirm>
+                <a-space>
+                  <a-button v-if="!isScanned.contacts" type="outline" size="mini" :loading="scanLoading.contacts" @click="handleScanSingle('contacts')">扫描</a-button>
+                  <a-popconfirm content="确定清空联系人缓存吗？" @ok="handleClearStore('contacts')">
+                    <a-button type="outline" size="mini" status="warning" :loading="clearLoading.contacts">清理</a-button>
+                  </a-popconfirm>
+                </a-space>
               </div>
               
               <div class="store-item">
                 <div class="store-info">
                   <span class="name">消息记录 (messages)</span>
-                  <span class="count">{{ cacheStats.msgCount }} 条</span>
+                  <span class="count">
+                    <template v-if="isScanned.messages">{{ cacheStats.msgCount }} 条</template>
+                    <template v-else>未扫描</template>
+                  </span>
                 </div>
                 <a-space>
+                  <a-button v-if="!isScanned.messages" type="outline" size="mini" :loading="scanLoading.messages" @click="handleScanSingle('messages')">扫描</a-button>
                   <a-popconfirm content="确定仅清理群消息吗？" @ok="handleClearGroupMessages">
-                    <a-button type="outline" size="mini" status="warning">仅清理群消息</a-button>
+                    <a-button type="outline" size="mini" status="warning" :loading="clearLoading.groupMessages">仅清理群消息</a-button>
                   </a-popconfirm>
                   <a-popconfirm content="确定仅清理公众号消息吗？" @ok="handleClearOfficialMessages">
-                    <a-button type="outline" size="mini" status="warning">仅清理公众号</a-button>
+                    <a-button type="outline" size="mini" status="warning" :loading="clearLoading.officialMessages">仅清理公众号</a-button>
                   </a-popconfirm>
                   <a-popconfirm content="确定清空所有消息记录吗？" @ok="handleClearStore('messages')">
-                    <a-button type="outline" size="mini" status="danger">全部清理</a-button>
+                    <a-button type="outline" size="mini" status="danger" :loading="clearLoading.messages">全部清理</a-button>
                   </a-popconfirm>
                 </a-space>
               </div>
@@ -179,60 +216,116 @@
               <div class="store-item">
                 <div class="store-info">
                   <span class="name">会话列表 (conversations)</span>
-                  <span class="count">{{ cacheStats.convCount }} 条</span>
+                  <span class="count">
+                    <template v-if="isScanned.conversations">{{ cacheStats.convCount }} 条</template>
+                    <template v-else>未扫描</template>
+                  </span>
                 </div>
-                <a-popconfirm content="确定清空会话列表吗？" @ok="handleClearStore('conversations')">
-                  <a-button type="outline" size="mini" status="warning">清理</a-button>
-                </a-popconfirm>
+                <a-space>
+                  <a-button v-if="!isScanned.conversations" type="outline" size="mini" :loading="scanLoading.conversations" @click="handleScanSingle('conversations')">扫描</a-button>
+                  <a-popconfirm content="确定清空会话列表吗？" @ok="handleClearStore('conversations')">
+                    <a-button type="outline" size="mini" status="warning" :loading="clearLoading.conversations">清理</a-button>
+                  </a-popconfirm>
+                </a-space>
               </div>
 
               <div class="store-item">
                 <div class="store-info">
                   <span class="name">图片/头像缓存 (Browser Cache)</span>
-                  <span class="count">{{ cacheStats.avatarCacheSize }}</span>
+                  <span class="count">
+                    <template v-if="isScanned.avatarCache">{{ cacheStats.avatarCacheSize }}</template>
+                    <template v-else>未扫描</template>
+                  </span>
                 </div>
-                <a-popconfirm content="确定清空浏览器图片缓存吗？" @ok="handleClearAvatarCache">
-                  <a-button type="outline" size="mini" status="warning">清理</a-button>
-                </a-popconfirm>
+                <a-space>
+                  <a-button v-if="!isScanned.avatarCache" type="outline" size="mini" :loading="scanLoading.avatarCache" @click="handleScanSingle('avatarCache')">扫描</a-button>
+                  <a-popconfirm content="确定清空浏览器图片缓存吗？" @ok="handleClearAvatarCache">
+                    <a-button type="outline" size="mini" status="warning" :loading="clearLoading.avatarCache">清理</a-button>
+                  </a-popconfirm>
+                </a-space>
               </div>
             </div>
 
             <a-divider />
             
             <a-popconfirm content="确定清空所有本地数据吗？" @ok="handleClearCache">
-              <a-button type="primary" status="danger" long>全部清空 (慎重)</a-button>
+              <a-button type="primary" status="danger" long :loading="clearLoading.all">全部清空 (慎重)</a-button>
             </a-popconfirm>
           </div>
         </a-tab-pane>
 
-        <a-tab-pane v-if="context === 'global'" key="3" title="调试设置">
+        <a-tab-pane v-if="context === 'global' || context === 'personal'" key="3" title="调试设置">
           <a-form :model="accountStore.debug" layout="vertical" style="margin-top: 15px;">
-            <a-form-item label="总开关 (All)">
-              <a-switch 
-                :model-value="accountStore.debug.all" 
-                @update:model-value="(val: any) => accountStore.updateDebugConfig({ all: val })" 
-              />
-            </a-form-item>
-            <a-form-item label="请求日志 (Request)">
-              <a-switch 
-                :model-value="accountStore.debug.request" 
-                @update:model-value="(val: any) => accountStore.updateDebugConfig({ request: val })" 
-              />
-            </a-form-item>
-            <a-form-item label="通信日志 (Socket)">
-              <a-switch 
-                :model-value="accountStore.debug.socket" 
-                @update:model-value="(val: any) => accountStore.updateDebugConfig({ socket: val })" 
-              />
-            </a-form-item>
-            <a-form-item label="缓存日志 (Cache)">
-              <a-switch 
-                :model-value="accountStore.debug.cache" 
-                @update:model-value="(val: any) => accountStore.updateDebugConfig({ cache: val })" 
-              />
-            </a-form-item>
-            <a-alert type="info" show-icon style="margin-top: 10px;">开启后请在浏览器控制台(F12)查看日志</a-alert>
+            <a-row :gutter="16">
+              <a-col :span="6">
+                <a-form-item label="总开关 (All)">
+                  <a-switch 
+                    :model-value="accountStore.debug.all" 
+                    @update:model-value="(val: any) => accountStore.updateDebugConfig({ all: val })" 
+                  />
+                </a-form-item>
+              </a-col>
+              <a-col :span="6">
+                <a-form-item label="请求日志 (Request)">
+                  <a-switch 
+                    :model-value="accountStore.debug.request" 
+                    @update:model-value="(val: any) => accountStore.updateDebugConfig({ request: val })" 
+                  />
+                </a-form-item>
+              </a-col>
+              <a-col :span="6">
+                <a-form-item label="通信日志 (Socket)">
+                  <a-switch 
+                    :model-value="accountStore.debug.socket" 
+                    @update:model-value="(val: any) => accountStore.updateDebugConfig({ socket: val })" 
+                  />
+                </a-form-item>
+              </a-col>
+              <a-col :span="6">
+                <a-form-item label="缓存日志 (Cache)">
+                  <a-switch 
+                    :model-value="accountStore.debug.cache" 
+                    @update:model-value="(val: any) => accountStore.updateDebugConfig({ cache: val })" 
+                  />
+                </a-form-item>
+              </a-col>
+            </a-row>
           </a-form>
+
+          <a-divider>内置调试控制台</a-divider>
+          <div class="terminal-container">
+            <div class="terminal-header">
+              <div class="terminal-dots">
+                <span class="dot red"></span>
+                <span class="dot yellow"></span>
+                <span class="dot green"></span>
+              </div>
+              <span class="terminal-title">iwe-web real-time debug console</span>
+              <a-space size="small">
+                <a-checkbox v-model="autoScrollLogs" size="small">自动滚动</a-checkbox>
+                <a-button type="text" size="mini" @click="handleCopyLogs">
+                  <template #icon><icon-copy /></template>复制
+                </a-button>
+                <a-button type="text" size="mini" status="danger" @click="handleClearPanelLogs">
+                  <template #icon><icon-delete /></template>清空
+                </a-button>
+              </a-space>
+            </div>
+            <div class="terminal-body" ref="logConsoleRef">
+              <div v-if="logsQueue.length === 0" class="log-line empty">
+                [SYSTEM] 暂无拦截日志。开启调试日志开关，并操作微信即可捕获数据。
+              </div>
+              <div 
+                v-for="(log, idx) in logsQueue" 
+                :key="idx" 
+                :class="['log-line', log.type]"
+              >
+                <span class="log-time">[{{ log.time }}]</span>
+                <span class="log-type">[{{ log.type.toUpperCase() }}]</span>
+                <pre class="log-text">{{ log.text }}</pre>
+              </div>
+            </div>
+          </div>
         </a-tab-pane>
 
         <a-tab-pane v-if="context === 'global'" key="personal_global" title="全局个人设置">
@@ -331,13 +424,15 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, watch, nextTick, computed } from 'vue';
+import { ref, reactive, watch, nextTick, computed, onMounted } from 'vue';
 import { useAccountStore } from '@/store/account';
 import { useChatStore } from '@/store/chat';
 import { adminApi } from '@/api/modules/admin';
 import { messageApi } from '@/api/modules/im';
 import { contactCache } from '@/utils/contactCache';
 import { Message } from '@arco-design/web-vue';
+import { IconSearch, IconCopy, IconDelete } from '@arco-design/web-vue/es/icon';
+import { logsQueue, initLogInterceptor } from '@/utils/debug';
 
 const props = defineProps<{
   visible: boolean;
@@ -378,6 +473,70 @@ const cacheStats = ref({
   avatarCacheSize: '0 B'
 });
 
+const isScanned = reactive({
+  estimatedSize: false,
+  actualSize: false,
+  contacts: false,
+  messages: false,
+  conversations: false,
+  avatars: false,
+  avatarCache: false
+});
+
+const scanLoading = reactive({
+  all: false,
+  estimatedSize: false,
+  actualSize: false,
+  contacts: false,
+  messages: false,
+  conversations: false,
+  avatars: false,
+  avatarCache: false
+});
+
+const clearLoading = reactive({
+  all: false,
+  avatars: false,
+  contacts: false,
+  messages: false,
+  groupMessages: false,
+  officialMessages: false,
+  conversations: false,
+  avatarCache: false
+});
+
+// 内置控制台组件逻辑
+const logConsoleRef = ref<HTMLDivElement | null>(null);
+const autoScrollLogs = ref(true);
+
+watch(logsQueue, () => {
+  if (autoScrollLogs.value) {
+    nextTick(() => {
+      if (logConsoleRef.value) {
+        logConsoleRef.value.scrollTop = logConsoleRef.value.scrollHeight;
+      }
+    });
+  }
+}, { deep: true });
+
+const handleCopyLogs = () => {
+  const logText = logsQueue.value.map(log => `[${log.time}] [${log.type.toUpperCase()}] ${log.text}`).join('\n');
+  if (!logText) {
+    Message.warning('当前无可用日志');
+    return;
+  }
+  navigator.clipboard.writeText(logText).then(() => {
+    Message.success('日志已成功复制到剪贴板');
+  }).catch(err => {
+    Message.error('复制失败: ' + err);
+  });
+};
+
+const handleClearPanelLogs = () => {
+  logsQueue.value = [];
+  Message.success('面板显示日志已清空');
+};
+
 const activeAccountNickname = computed(() => {
   if (!accountStore.activeAccountUuid) return '未知账号';
   const activeAcc = accountStore.accounts.find(a => a.uuid === accountStore.activeAccountUuid || a.sessionKey === accountStore.activeAccountUuid);
@@ -390,7 +549,10 @@ watch(() => props.visible, (newVal) => {
     activeAdminTab.value = props.context === 'personal' ? 'personal' : '1';
     baseConfigForm.baseUrl = accountStore.baseUrl;
     baseConfigForm.adminKey = accountStore.adminKey;
-    loadCacheStats();
+    // 重置扫描状态，避免打开时展示过时的缓存数据
+    Object.keys(isScanned).forEach(k => {
+      (isScanned as any)[k] = false;
+    });
   }
 });
 
@@ -514,83 +676,216 @@ const handleGetFriendList = async () => {
   }
 };
 
-const loadCacheStats = async () => {
+// 一键扫描所有 IndexedDB 分表
+const handleScanAll = async () => {
+  scanLoading.all = true;
   const uuid = accountStore.activeAccountUuid && accountStore.activeAccountUuid !== 'pending_login' ? accountStore.activeAccountUuid : undefined;
-  
-  const [c, m, v, a, est, act, avt] = await Promise.all([
-    contactCache.getCount('contacts', uuid),
-    contactCache.getCount('messages', uuid),
-    contactCache.getCount('conversations', uuid),
-    contactCache.getCount('avatars', uuid),
-    contactCache.getEstimatedSize(),
-    contactCache.getActualSize(),
-    contactCache.getAvatarCacheSize()
-  ]);
-  
-  cacheStats.value = {
-    contactCount: c,
-    msgCount: m,
-    convCount: v,
-    avatarCount: a,
-    estimatedSize: est,
-    actualSize: act,
-    avatarCacheSize: avt
-  };
+  try {
+    const [c, m, v, a, est, act, avt] = await Promise.all([
+      contactCache.getCount('contacts', uuid),
+      contactCache.getCount('messages', uuid),
+      contactCache.getCount('conversations', uuid),
+      contactCache.getCount('avatars', uuid),
+      contactCache.getEstimatedSize(),
+      contactCache.getActualSize(),
+      contactCache.getAvatarCacheSize()
+    ]);
+    cacheStats.value = {
+      contactCount: c,
+      msgCount: m,
+      convCount: v,
+      avatarCount: a,
+      estimatedSize: est,
+      actualSize: act,
+      avatarCacheSize: avt
+    };
+    isScanned.contacts = true;
+    isScanned.messages = true;
+    isScanned.conversations = true;
+    isScanned.avatars = true;
+    isScanned.estimatedSize = true;
+    isScanned.actualSize = true;
+    isScanned.avatarCache = true;
+    Message.success('一键扫描完成');
+  } catch (err: any) {
+    Message.error('扫描失败: ' + err.message);
+  } finally {
+    scanLoading.all = false;
+  }
+};
+
+// 局部单项扫描
+const handleScanSingle = async (key: keyof typeof isScanned) => {
+  const uuid = accountStore.activeAccountUuid && accountStore.activeAccountUuid !== 'pending_login' ? accountStore.activeAccountUuid : undefined;
+  scanLoading[key] = true;
+  try {
+    if (key === 'contacts') {
+      cacheStats.value.contactCount = await contactCache.getCount('contacts', uuid);
+    } else if (key === 'messages') {
+      cacheStats.value.msgCount = await contactCache.getCount('messages', uuid);
+    } else if (key === 'conversations') {
+      cacheStats.value.convCount = await contactCache.getCount('conversations', uuid);
+    } else if (key === 'avatars') {
+      cacheStats.value.avatarCount = await contactCache.getCount('avatars', uuid);
+    } else if (key === 'avatarCache') {
+      cacheStats.value.avatarCacheSize = await contactCache.getAvatarCacheSize();
+    } else if (key === 'estimatedSize') {
+      cacheStats.value.estimatedSize = await contactCache.getEstimatedSize();
+    } else if (key === 'actualSize') {
+      cacheStats.value.actualSize = await contactCache.getActualSize();
+    }
+    isScanned[key] = true;
+    Message.success('扫描完成');
+  } catch (err: any) {
+    Message.error('扫描项失败: ' + err.message);
+  } finally {
+    scanLoading[key] = false;
+  }
 };
 
 const handleClearAvatarCache = async () => {
-  await contactCache.clearAvatarCache();
-  Message.success('图片缓存已清空');
-  await loadCacheStats();
+  try {
+    clearLoading.avatarCache = true;
+    await contactCache.clearAvatarCache();
+    cacheStats.value.avatarCacheSize = '0 B';
+    isScanned.avatarCache = true;
+    Message.success('图片缓存已清空');
+  } catch (err: any) {
+    Message.error('清理图片缓存失败: ' + err.message);
+  } finally {
+    clearLoading.avatarCache = false;
+  }
 };
 
 const handleClearGroupMessages = async () => {
   if (!accountStore.activeAccountUuid) return;
-  await chatStore.clearGroupMessages(accountStore.activeAccountUuid);
-  Message.success('群消息已清空');
-  await loadCacheStats();
+  try {
+    clearLoading.groupMessages = true;
+    await chatStore.clearGroupMessages(accountStore.activeAccountUuid);
+    Message.success('群消息已清空');
+    // 如果已经扫描过了，自动重新扫描该项，确保界面数据实时一致
+    if (isScanned.messages) {
+      await handleScanSingle('messages');
+    }
+  } catch (err: any) {
+    Message.error('清理群消息失败: ' + err.message);
+  } finally {
+    clearLoading.groupMessages = false;
+  }
 };
 
 const handleClearOfficialMessages = async () => {
   if (!accountStore.activeAccountUuid) return;
-  await chatStore.clearOfficialMessages(accountStore.activeAccountUuid);
-  Message.success('公众号消息已清空');
-  await loadCacheStats();
+  try {
+    clearLoading.officialMessages = true;
+    await chatStore.clearOfficialMessages(accountStore.activeAccountUuid);
+    Message.success('公众号消息已清空');
+    // 如果已经扫描过了，自动重新扫描该项
+    if (isScanned.messages) {
+      await handleScanSingle('messages');
+    }
+  } catch (err: any) {
+    Message.error('清理公众号消息失败: ' + err.message);
+  } finally {
+    clearLoading.officialMessages = false;
+  }
 };
  
 const handleClearStore = async (name: string) => {
   const uuid = accountStore.activeAccountUuid && accountStore.activeAccountUuid !== 'pending_login' ? accountStore.activeAccountUuid : undefined;
 
-  await contactCache.clearStore(name, uuid);
-  
-  if (uuid) {
-    if (name === 'messages') {
-      chatStore.accountMessages[uuid] = {};
-    } else if (name === 'conversations') {
-      chatStore.accountConversations[uuid] = [];
-    } else if (name === 'contacts') {
-      accountStore.accountContactMaps[uuid] = {};
+  try {
+    (clearLoading as any)[name] = true;
+    await contactCache.clearStore(name, uuid);
+    
+    if (uuid) {
+      if (name === 'messages') {
+        chatStore.accountMessages[uuid] = {};
+        chatStore.clearMemoryAll(uuid);
+      } else if (name === 'conversations') {
+        chatStore.accountConversations[uuid] = [];
+      } else if (name === 'contacts') {
+        accountStore.accountContactMaps[uuid] = {};
+        accountStore.clearMemoryAll(uuid); // 清空内存中的去重/同步锁/时间/加载状态
+      }
+    } else {
+      if (name === 'messages') {
+        chatStore.clearMemoryAll();
+      } else if (name === 'conversations') {
+        chatStore.accountConversations = {};
+      } else if (name === 'contacts') {
+        accountStore.clearMemoryAll();
+      }
     }
-  }
 
-  Message.success(`已清空 ${uuid ? '当前账号 ' : ''}${name} 表`);
-  await loadCacheStats();
+    // 内存直接置 0 并设为已扫描，无须再次触发繁杂的全盘扫描
+    if (name === 'avatars') {
+      cacheStats.value.avatarCount = 0;
+      isScanned.avatars = true;
+    } else if (name === 'contacts') {
+      cacheStats.value.contactCount = 0;
+      isScanned.contacts = true;
+    } else if (name === 'messages') {
+      cacheStats.value.msgCount = 0;
+      isScanned.messages = true;
+    } else if (name === 'conversations') {
+      cacheStats.value.convCount = 0;
+      isScanned.conversations = true;
+    }
+
+    Message.success(`已清空 ${uuid ? '当前账号 ' : ''}${name} 表`);
+  } catch (err: any) {
+    Message.error('清理失败: ' + err.message);
+  } finally {
+    (clearLoading as any)[name] = false;
+  }
 };
 
 const handleClearCache = async () => {
   const uuid = accountStore.activeAccountUuid && accountStore.activeAccountUuid !== 'pending_login' ? accountStore.activeAccountUuid : undefined;
 
-  await contactCache.clearAll(uuid);
-  
-  if (uuid) {
-    chatStore.accountMessages[uuid] = {};
-    chatStore.accountConversations[uuid] = [];
-    accountStore.accountContactMaps[uuid] = {};
-  }
+  try {
+    clearLoading.all = true;
+    await contactCache.clearAll(uuid);
+    
+    if (uuid) {
+      chatStore.clearMemoryAll(uuid);
+      accountStore.clearMemoryAll(uuid);
+    } else {
+      chatStore.clearMemoryAll();
+      accountStore.clearMemoryAll();
+    }
 
-  Message.success(`已清空${uuid ? '当前账号的' : '所有'}本地数据`);
-  await loadCacheStats();
+    // 内存置零并标记已扫描
+    cacheStats.value = {
+      contactCount: 0,
+      msgCount: 0,
+      convCount: 0,
+      avatarCount: 0,
+      estimatedSize: '0 B',
+      actualSize: '0 B',
+      avatarCacheSize: '0 B'
+    };
+    
+    isScanned.contacts = true;
+    isScanned.messages = true;
+    isScanned.conversations = true;
+    isScanned.avatars = true;
+    isScanned.estimatedSize = true;
+    isScanned.actualSize = true;
+    isScanned.avatarCache = true;
+
+    Message.success(`已清空${uuid ? '当前账号的' : '所有'}本地数据`);
+  } catch (err: any) {
+    Message.error('全部清空失败: ' + err.message);
+  } finally {
+    clearLoading.all = false;
+  }
 };
+
+onMounted(() => {
+  initLogInterceptor();
+});
 </script>
 
 <style scoped>
@@ -626,7 +921,7 @@ const handleClearCache = async () => {
 }
 .data-mgmt { padding: 10px 0; }
 .stat-group { background: #2e2e2e; padding: 15px; border-radius: 8px; margin-bottom: 10px; }
-.stat-item { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 14px; }
+.stat-item { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 14px; }
 .stat-item:last-child { margin-bottom: 0; }
 .valueHighlight { color: #07c160; font-weight: bold; font-size: 16px; }
 .store-grid { display: flex; flex-direction: column; gap: 10px; }
@@ -634,6 +929,87 @@ const handleClearCache = async () => {
 .store-info { display: flex; flex-direction: column; }
 .store-info .name { font-size: 13px; color: #e5e6eb; }
 .store-info .count { font-size: 11px; color: #86909c; }
+
+/* Terminal styling */
+.terminal-container {
+  background: #1e1e1e;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  border: 1px solid #333;
+}
+.terminal-header {
+  background: #2d2d2d;
+  padding: 8px 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid #1a1a1a;
+}
+.terminal-dots {
+  display: flex;
+  gap: 6px;
+}
+.terminal-dots .dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.terminal-dots .dot.red { background: #ff5f56; }
+.terminal-dots .dot.yellow { background: #ffbd2e; }
+.terminal-dots .dot.green { background: #27c93f; }
+.terminal-title {
+  color: #a9b2c3;
+  font-size: 11px;
+  font-family: monospace;
+}
+.terminal-body {
+  height: 300px;
+  overflow-y: auto;
+  padding: 12px;
+  font-family: Consolas, Monaco, 'Andale Mono', 'Ubuntu Mono', monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #d4d4d4;
+  background: #181818;
+}
+.log-line {
+  margin-bottom: 8px;
+  word-break: break-all;
+  white-space: pre-wrap;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+.log-line.empty {
+  color: #858585;
+  font-style: italic;
+}
+.log-line.log {
+  color: #4ec9b0;
+}
+.log-line.warn {
+  color: #ce9178;
+}
+.log-line.error {
+  color: #f44747;
+}
+.log-time {
+  color: #858585;
+  flex-shrink: 0;
+}
+.log-type {
+  font-weight: bold;
+  flex-shrink: 0;
+}
+.log-text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-family: inherit;
+  flex-grow: 1;
+}
 
 @media (max-width: 768px) {
   .store-item {

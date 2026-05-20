@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { Message } from '@arco-design/web-vue';
+import { isDebug } from '@/utils/debug';
 
 const service = axios.create({
   timeout: 30000,
@@ -10,9 +11,8 @@ service.interceptors.request.use(
     const baseUrl = localStorage.getItem('baseUrl') || localStorage.getItem('iwe_base_url') || '';
     const adminKey = localStorage.getItem('ADMIN_KEY');
     const tokenKey = localStorage.getItem('TOKEN_KEY');
-    const debugConfig = JSON.parse(localStorage.getItem('debug_config') || '{"all":false,"request":false}');
 
-    if (debugConfig.all || debugConfig.request) {
+    if (isDebug('request')) {
       console.log(`[Request] ${config.method?.toUpperCase()} ${config.url}`, config.params || '', config.data || '');
     }
 
@@ -40,9 +40,8 @@ service.interceptors.request.use(
 service.interceptors.response.use(
   (response) => {
     const res = response.data;
-    const debugConfig = JSON.parse(localStorage.getItem('debug_config') || '{"all":false,"request":false}');
 
-    if (debugConfig.all || debugConfig.request) {
+    if (isDebug('request')) {
       console.log(`[Response] ${response.config.url}`, res);
     }
 

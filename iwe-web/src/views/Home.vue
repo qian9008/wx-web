@@ -174,13 +174,11 @@ const handleActiveAccountManualCheck = async () => {
 const handleOpenGlobalSettings = () => {
   adminPanelContext.value = 'global';
   adminVisible.value = true;
-  activeAdminTab.value = '1';
 };
 
 const handleOpenPersonalSettings = () => {
   adminPanelContext.value = 'personal';
   adminVisible.value = true;
-  activeAdminTab.value = 'personal';
 };
 
 const pendingSessionKey = ref('');
