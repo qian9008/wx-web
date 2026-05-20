@@ -292,7 +292,7 @@
             </a-row>
           </a-form>
 
-          <a-divider>内置调试控制台</a-divider>
+          <a-divider>内置调试控制台 <a-tag color="arcoblue" size="small" style="margin-left: 8px;">v1.3.0 (静默过滤防爆版)</a-tag></a-divider>
           <div class="terminal-container">
             <div class="terminal-header">
               <div class="terminal-dots">
