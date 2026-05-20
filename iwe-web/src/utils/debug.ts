@@ -85,9 +85,34 @@ export const initLogInterceptor = () => {
   };
 
   const pushToQueue = (type: 'log' | 'warn' | 'error', args: any[]) => {
+    // 1. 若没有开启任何调试开关，直接不记录，保持内置终端彻底静默
+    if (!cachedConfig.all && !cachedConfig.request && !cachedConfig.socket && !cachedConfig.cache) {
+      return;
+    }
+
     const text = formatArgs(args);
+
+    // 2. 若调试总开关 (All) 关闭，但某些子模块调试开启，则实行精准拦截过滤
+    if (!cachedConfig.all) {
+      let allow = type === 'error' || type === 'warn'; // 错误和警告默认允许
+      
+      const lowerText = text.toLowerCase();
+      if (!allow && cachedConfig.request && (lowerText.includes('[request]') || lowerText.includes('[api]') || lowerText.includes('api/'))) {
+        allow = true;
+      }
+      if (!allow && cachedConfig.socket && (lowerText.includes('[socket') || lowerText.includes('[pollonce') || lowerText.includes('ws '))) {
+        allow = true;
+      }
+      if (!allow && cachedConfig.cache && (lowerText.includes('[cache]') || lowerText.includes('[db]') || lowerText.includes('indexeddb') || lowerText.includes('[accountstore]'))) {
+        allow = true;
+      }
+
+      if (!allow) {
+        return; // 过滤非调试普通日志，防止终端无谓跳动
+      }
+    }
+
     const time = new Date().toLocaleTimeString();
-    
     logsQueue.value.push({ type, text, time });
     
     // 超过上限淘汰最旧日志

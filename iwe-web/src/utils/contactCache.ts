@@ -3,6 +3,7 @@ const DB_VERSION = 7; // v7: CONV_STORE 添加 accountUuid 索引，MSG_STORE �
 const STORE_NAME = 'contacts';
 const MSG_STORE = 'messages';
 const CONV_STORE = 'conversations';
+import { isDebug } from './debug';
 const AVATAR_STORE = 'avatars';
 
 // Fix #9: 每个会话最多保留的消息条数（FIFO 淘汰）
@@ -31,7 +32,9 @@ export const contactCache = {
       request.onupgradeneeded = (e: any) => {
         const db = e.target.result;
         const oldVersion = e.oldVersion;
-        console.log('[DB] 触发升级逻辑, 当前版本:', oldVersion, '->', e.newVersion);
+        if (isDebug('cache')) {
+          console.log('[DB] 触发升级逻辑, 当前版本:', oldVersion, '->', e.newVersion);
+        }
 
         // contacts store
         if (db.objectStoreNames.contains(STORE_NAME)) {
@@ -402,7 +405,9 @@ export const contactCache = {
 
     try {
       await Promise.all(promises);
-      console.log(`[DB] 完成账号数据迁移: ${oldUuid} -> ${newUuid}`);
+      if (isDebug('cache')) {
+        console.log(`[DB] 完成账号数据迁移: ${oldUuid} -> ${newUuid}`);
+      }
     } catch (err) {
       console.error(`[DB] 账号数据迁移失败: ${oldUuid} -> ${newUuid}`, err);
       throw err;
@@ -511,7 +516,9 @@ export const contactCache = {
         const isExpired = now - result.timestamp > AVATAR_TTL;
 
         if (isExpired) {
-          console.log(`[Cache] 头像缓存已过期 (30天): ${url}`);
+          if (isDebug('cache')) {
+            console.log(`[Cache] 头像缓存已过期 (30天): ${url}`);
+          }
           // 🚀 优化：后台异步起写事务删除，不阻塞当前读取返回
           this._deleteAvatar(url);
           resolve(null);
