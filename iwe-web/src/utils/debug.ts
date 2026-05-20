@@ -65,6 +65,7 @@ export interface InterceptedLog {
   type: 'log' | 'warn' | 'error';
   text: string;
   time: string;
+  count?: number;
 }
 
 const MAX_LOGS_LIMIT = 200;
@@ -139,7 +140,17 @@ export const initLogInterceptor = () => {
     // 3. 安全通过过滤后，才执行格式化，开销降低 99.9%
     const text = formatArgs(args);
     const time = new Date().toLocaleTimeString();
-    logsQueue.value.push({ type, text, time });
+
+    // 🚀 重复日志折叠计数引擎：如果与最后一条日志的内容和类型完全一致，则直接累加 count
+    const len = logsQueue.value.length;
+    if (len > 0 && logsQueue.value[len - 1].text === text && logsQueue.value[len - 1].type === type) {
+      const lastLog = logsQueue.value[len - 1];
+      lastLog.count = (lastLog.count || 1) + 1;
+      lastLog.time = time;
+      return;
+    }
+    
+    logsQueue.value.push({ type, text, time, count: 1 });
     
     // 超过上限淘汰最旧日志
     if (logsQueue.value.length > MAX_LOGS_LIMIT) {
