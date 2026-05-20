@@ -6,7 +6,51 @@
           <icon-left :size="18" />
           <span>返回</span>
         </div>
-        <div class="title">{{ partnerName }}</div>
+        <div class="title-area">
+          <div class="title">{{ partnerName }}</div>
+          <a-tag v-if="relationLabel" :color="relationColor" size="small" class="relation-tag">
+            {{ relationLabel }}
+          </a-tag>
+        </div>
+        <a-space v-if="activeId" class="header-actions">
+          <a-button 
+            type="outline" 
+            size="mini" 
+            status="success" 
+            class="relation-btn"
+            :loading="isCheckingRelation"
+            @click="handleCheckRelation"
+          >
+            <template #icon><icon-safe /></template>
+            检测关系
+          </a-button>
+          <a-button 
+            type="outline" 
+            size="mini" 
+            class="refresh-btn"
+            :loading="isRefreshingDetails"
+            @click="handleRefreshDetails"
+          >
+            <template #icon><icon-refresh /></template>
+            更新资料
+          </a-button>
+          <a-popconfirm 
+            content="确定要彻底删除该好友吗？此操作不可逆！" 
+            type="warning" 
+            @ok="handleDeleteContact"
+          >
+            <a-button 
+              type="outline" 
+              size="mini" 
+              status="danger" 
+              class="delete-btn"
+              :loading="isDeletingContact"
+            >
+              <template #icon><icon-delete /></template>
+              删除好友
+            </a-button>
+          </a-popconfirm>
+        </a-space>
       </div>
       
       <div class="messages-flow" ref="msgFlow">
@@ -33,6 +77,13 @@
       </div>
 
       <div class="input-section">
+        <!-- 防爆粉风控警告条 -->
+        <div v-if="showRiskWarning" class="risk-warning-bar">
+          <icon-exclamation-circle-fill />
+          <span class="warning-text">
+            防风控提醒：检测到对方非正常好友（关系: [{{ relationLabel }}]）。给非好友发送消息极易被微信风控系统标记拦截并限制功能，请谨慎操作！
+          </span>
+        </div>
         <div class="input-tools">
           <icon-face-smile-fill :size="20" />
           <icon-folder :size="20" />
@@ -66,11 +117,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, nextTick } from 'vue';
+import { ref, watch, nextTick, computed } from 'vue';
 import { 
   IconLeft, IconFaceSmileFill, IconFolder, IconImage, 
-  IconUser, IconMessage 
+  IconUser, IconMessage, IconSafe, IconExclamationCircleFill, IconRefresh, IconDelete
 } from '@arco-design/web-vue/es/icon';
+import { useAccountStore } from '@/store/account';
+import { Modal, Message } from '@arco-design/web-vue';
 
 interface Message {
   id: string | number;
@@ -101,10 +154,129 @@ const emit = defineEmits<{
 const inputText = ref('');
 const msgFlow = ref<HTMLElement | null>(null);
 
+const accountStore = useAccountStore();
+
+const contactDetail = computed(() => {
+  if (!props.activeId) return null;
+  return accountStore.contactMap[props.activeId] || null;
+});
+
+const relationValue = computed(() => {
+  return contactDetail.value?.friendRelation;
+});
+
+const relationLabel = computed(() => {
+  const r = relationValue.value;
+  if (r === 0) return '陌生人';
+  if (r === 1) return '互为好友';
+  if (r === 2) return '被拉黑';
+  if (r === 3) return '已被删除';
+  return '';
+});
+
+const relationColor = computed(() => {
+  const r = relationValue.value;
+  if (r === 0) return 'orange';
+  if (r === 1) return 'green';
+  if (r === 2) return 'red';
+  if (r === 3) return 'red';
+  return 'gray';
+});
+
+const showRiskWarning = computed(() => {
+  const r = relationValue.value;
+  // 如果关系是陌生人(0)、拉黑(2)、被删除(3)，显示风控提示
+  return r === 0 || r === 2 || r === 3;
+});
+
+const isCheckingRelation = ref(false);
+
+const handleCheckRelation = async () => {
+  if (!props.activeId) return;
+  isCheckingRelation.value = true;
+  try {
+    const res = await accountStore.checkFriendRelation(props.activeId);
+    const relation = res?.FriendRelation;
+    
+    if (relation === 1) {
+      Message.success('关系检测完成：您与对方互为正常好友！');
+    } else if (relation === 0) {
+      Message.warning('关系检测完成：对方当前为您的陌生人（非好友）。');
+    } else if (relation === 3) {
+      Message.error('关系检测完成：对方已将您删除！');
+    } else if (relation === 2) {
+      Message.error('关系检测完成：您已被对方拉入黑名单！');
+    } else {
+      Message.info('关系检测完成。');
+    }
+  } catch (err: any) {
+    const errMsg = err?.Text || err?.message || '请求失败，请稍后重试';
+    Message.error(`检测失败: ${errMsg}`);
+  } finally {
+    isCheckingRelation.value = false;
+  }
+};
+
+const isRefreshingDetails = ref(false);
+
+const handleRefreshDetails = async () => {
+  if (!props.activeId) return;
+  isRefreshingDetails.value = true;
+  try {
+    const detail = await accountStore.forceUpdateContactDetails(props.activeId);
+    
+    const remark = detail.remark || detail.Remark;
+    const remarkStr = remark && typeof remark === 'object' ? remark.str : remark || '';
+    const nick = detail.nickName || detail.NickName || detail.nickname;
+    const nickStr = nick && typeof nick === 'object' ? nick.str : nick || '';
+    const newName = remarkStr || nickStr || props.activeId;
+
+    Message.success(`资料更新成功！最新名称: ${newName}`);
+  } catch (err: any) {
+    const errMsg = err?.Text || err?.message || '请求失败，请稍后重试';
+    Message.error(`资料更新失败: ${errMsg}`);
+  } finally {
+    isRefreshingDetails.value = false;
+  }
+};
+
+const isDeletingContact = ref(false);
+
+const handleDeleteContact = async () => {
+  if (!props.activeId) return;
+  isDeletingContact.value = true;
+  try {
+    await accountStore.deleteContact(props.activeId);
+    Message.success('好友删除成功！已清空本地会话与联系人缓存。');
+    emit('back'); // 自动返回列表页，关闭聊天视窗
+  } catch (err: any) {
+    const errMsg = err?.Text || err?.message || '请求失败，请稍后重试';
+    Message.error(`删除好友失败: ${errMsg}`);
+  } finally {
+    isDeletingContact.value = false;
+  }
+};
+
 const handleSendMessageLocal = () => {
   if (!inputText.value.trim()) return;
-  emit('sendMessage', inputText.value);
-  inputText.value = '';
+  
+  if (showRiskWarning.value) {
+    // 防爆粉风控弹窗拦截确认！
+    Modal.warning({
+      title: '防爆粉风控警告',
+      content: `检测到对方并非您的好友（当前状态: [${relationLabel.value}]）。给非好友高频发消息极易被微信风控系统拦截，甚至导致微信号被封禁限制。是否依然确定要发送此消息？`,
+      okText: '确认发送',
+      cancelText: '取消',
+      showCancel: true,
+      onOk: () => {
+        emit('sendMessage', inputText.value);
+        inputText.value = '';
+      }
+    });
+  } else {
+    emit('sendMessage', inputText.value);
+    inputText.value = '';
+  }
 };
 
 const scrollToBottom = async () => {
@@ -135,102 +307,4 @@ const formatTime = (time: number) => {
 };
 </script>
 
-<style scoped>
-.chat-window { flex: 1; background: #1a1a1a; display: flex; flex-direction: column; height: 100%; }
-.chat-header { height: 60px; border-bottom: 1px solid #2e2e2e; display: flex; align-items: center; padding: 0 20px; }
-.chat-header .title { font-weight: 500; font-size: 16px; color: #e5e6eb; }
-.messages-flow { flex: 1; overflow-y: auto; padding: 20px; }
 
-/* Sleek custom scrollbars */
-.messages-flow::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-.messages-flow::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.15);
-  border-radius: 10px;
-}
-.messages-flow::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.3);
-}
-.messages-flow::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.msg-row { display: flex; margin-bottom: 20px; }
-.msg-row.self { flex-direction: row-reverse; }
-.msg-avatar { flex-shrink: 0; }
-.msg-bubble {
-  max-width: 70%;
-  padding: 10px 14px 6px 14px;
-  border-radius: 8px;
-  background: #2e2e2e;
-  margin: 0 12px;
-  display: flex;
-  flex-direction: column;
-  word-wrap: break-word;
-  overflow-wrap: break-word;
-  word-break: break-all;
-  white-space: pre-wrap;
-  color: #e5e6eb;
-}
-.self .msg-bubble { background: #268d44; color: #fff; }
-.msg-time {
-  align-self: flex-end;
-  font-size: 11px;
-  color: #86909c;
-  margin-top: 4px;
-  user-select: none;
-  line-height: 1;
-}
-.self .msg-time {
-  color: rgba(255, 255, 255, 0.7);
-}
-.revoked-tag {
-  font-size: 11px;
-  color: #ee4d2d;
-  margin-top: 4px;
-}
-.input-section { height: 160px; border-top: 1px solid #2e2e2e; display: flex; flex-direction: column; background: #1a1a1a; }
-.input-tools { height: 40px; display: flex; padding: 0 15px; gap: 15px; align-items: center; color: #86909c; }
-.input-section textarea { flex: 1; border: none; padding: 10px 15px; background: transparent; color: #e5e6eb; outline: none; resize: none; font-family: inherit; }
-.submit-bar { height: 40px; display: flex; justify-content: flex-end; padding: 0 15px; }
-.empty-holder { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; opacity: 0.3; color: #e5e6eb; }
-.empty-holder .hint { margin-top: 12px; font-size: 14px; }
-.empty-holder .sub-hint { font-size: 12px; margin-top: 4px; }
-
-/* Mobile Adaptation */
-.chat-header-back {
-  display: none;
-}
-
-@media (max-width: 768px) {
-  .chat-header {
-    padding: 0 12px !important;
-    gap: 8px;
-  }
-  .chat-header-back {
-    display: flex !important;
-    align-items: center;
-    color: #07c160;
-    cursor: pointer;
-    font-size: 14px;
-    font-weight: 500;
-    margin-right: 8px;
-    padding: 6px 0;
-  }
-  .chat-header-back span {
-    margin-left: 2px;
-  }
-  .msg-bubble {
-    max-width: 85% !important;
-  }
-  .input-section {
-    height: 120px !important;
-  }
-  .input-section textarea {
-    padding: 8px 12px !important;
-    font-size: 14px !important;
-  }
-}
-</style>

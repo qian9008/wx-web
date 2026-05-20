@@ -29,7 +29,7 @@
       :self-avatar="currentAccountAvatar"
       :partner-avatar="currentPartnerAvatar"
       :active-account-uuid="accountStore.activeAccountUuid"
-      :has-conversations="currentConversations.length > 0"
+      :has-conversations="!!(accountStore.activeAccountUuid && chatStore.accountConversations[accountStore.activeAccountUuid]?.length)"
       @send-message="handleSendMessage"
       @add-account="handleAddAccount"
       @back="chatStore.activeId = ''"
@@ -79,7 +79,7 @@ const chatStore = useChatStore();
 const getContactId = (c: any) => {
   if (!c) return '';
   const user = c.userName || c.UserName || c.wxid;
-  return (user && typeof user === 'object') ? (user.str || '') : (user || '');
+  return String((user && typeof user === 'object') ? (user.str || '') : (user || ''));
 };
 
 const getContactName = (c: any) => {
@@ -89,31 +89,6 @@ const getContactName = (c: any) => {
   const remark = c.remark || c.Remark;
   const remarkStr = (remark && typeof remark === 'object') ? remark.str : remark;
   return remarkStr || nickStr || getContactId(c) || '未知';
-};
-
-const getContactAvatar = (c: any) => {
-  const url = c.smallHeadImgUrl || c.SmallHeadImgUrl || c.headImgUrl || c.HeadImgUrl || c.avatar || '';
-  const rawUrl = typeof url === 'string' ? url.trim().replace(/`/g, '') : '';
-  if (!rawUrl) return '';
-  return accountStore.avatarBlobMap[rawUrl] || rawUrl;
-};
-
-const getAccountAvatar = (acc: any) => {
-  if (!acc) return '';
-  const selfContact = accountStore.accountContactMaps[acc.uuid]?.[acc.uuid];
-  if (selfContact) {
-    const cached = getContactAvatar(selfContact);
-    if (cached) return cached;
-  }
-  const activeContact = accountStore.contactMap[acc.uuid];
-  if (activeContact) {
-    const cached = getContactAvatar(activeContact);
-    if (cached) return cached;
-  }
-  if (acc.avatar) {
-    return accountStore.avatarBlobMap[acc.avatar] || acc.avatar;
-  }
-  return '';
 };
 
 const loginVisible = ref(false);
@@ -174,13 +149,11 @@ const handleActiveAccountManualCheck = async () => {
 const handleOpenGlobalSettings = () => {
   adminPanelContext.value = 'global';
   adminVisible.value = true;
-  activeAdminTab.value = '1';
 };
 
 const handleOpenPersonalSettings = () => {
   adminPanelContext.value = 'personal';
   adminVisible.value = true;
-  activeAdminTab.value = 'personal';
 };
 
 const pendingSessionKey = ref('');
@@ -268,14 +241,13 @@ const currentChatPartnerName = computed(() => {
 const currentAccountAvatar = computed(() => {
   const acc = accountStore.accounts.find(a => a.uuid === accountStore.activeAccountUuid);
   if (!acc) return '';
-  return getAccountAvatar(acc);
+  return accountStore.getAccountAvatar(acc);
 });
 
 const currentPartnerAvatar = computed(() => {
   const detail = accountStore.contactMap[chatStore.activeId];
   if (detail) {
-    const avatar = getContactAvatar(detail);
-    if (avatar) return accountStore.avatarBlobMap[avatar] || avatar;
+    return accountStore.getContactAvatar(detail);
   }
   return '';
 });
@@ -361,4 +333,4 @@ onUnmounted(() => {
 });
 </script>
 
-<style scoped src="./Home.css"></style>
+<style src="./Home.css"></style>

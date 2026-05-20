@@ -320,10 +320,81 @@
               </a-button>
             </a-form-item>
             <a-divider>数据获取</a-divider>
+            <a-form-item label="个人资料" help="从微信后端服务器手动拉取并强制同步您当前账号的最新昵称、微信号与自身头像">
+              <a-button 
+                type="primary" 
+                size="small" 
+                status="success" 
+                @click="handleSyncSelfProfile" 
+                :loading="syncSelfProfileLoading"
+              >
+                同步自身个人资料与头像
+              </a-button>
+            </a-form-item>
             <a-form-item label="好友列表" help="调用 /friend/GetFriendList 获取最新好友列表">
               <a-button type="primary" size="small" @click="handleGetFriendList" :loading="friendListLoading">获取好友列表</a-button>
             </a-form-item>
           </a-form>
+        </a-tab-pane>
+
+        <a-tab-pane v-if="accountStore.activeAccountUuid" key="invalid_contacts" title="失效联系人清理">
+          <div style="margin-top: 15px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+              <div style="font-size: 14px; font-weight: bold; color: #86909c;">
+                当前扫描账号: <span style="color: #07c160;">{{ activeAccountNickname }}</span>
+              </div>
+              <a-space>
+                <a-button type="primary" size="small" :loading="isScanningInvalid" @click="scanInvalidContacts">
+                  <template #icon><icon-search /></template>
+                  一键扫描失效联系人
+                </a-button>
+                <a-popconfirm content="确定要批量删除选中的失效联系人吗？该操作将从本地缓存和会话彻底清除！" @ok="batchDeleteInvalidContacts">
+                  <a-button type="primary" status="danger" size="small" :disabled="selectedInvalidRowKeys.length === 0">
+                    <template #icon><icon-delete /></template>
+                    批量删除选中 ({{ selectedInvalidRowKeys.length }})
+                  </a-button>
+                </a-popconfirm>
+              </a-space>
+            </div>
+
+            <a-table 
+              row-key="wxid"
+              :loading="isScanningInvalid"
+              :data="invalidContactsList"
+              :row-selection="invalidRowSelection"
+              v-model:selected-keys="selectedInvalidRowKeys"
+              :pagination="{ pageSize: 10 }"
+              size="small"
+              :scroll="{ x: '100%' }"
+            >
+              <template #columns>
+                <a-table-column title="头像" :width="65">
+                  <template #cell="{ record }">
+                    <a-avatar :size="30" shape="square" :style="{ backgroundColor: '#337ecc' }">
+                      <img v-if="record.avatar" :src="record.avatar" referrerpolicy="no-referrer" />
+                      <template v-else>{{ record.nickname ? record.nickname[0] : 'U' }}</template>
+                    </a-avatar>
+                  </template>
+                </a-table-column>
+                <a-table-column title="显示名称" data-index="nickname" />
+                <a-table-column title="微信号/Wxid" data-index="wxid" />
+                <a-table-column title="失效类型" :width="140">
+                  <template #cell="{ record }">
+                    <a-tag :color="record.relationColor" size="mini">
+                      {{ record.relationLabel }}
+                    </a-tag>
+                  </template>
+                </a-table-column>
+                <a-table-column title="操作" :width="80">
+                  <template #cell="{ record }">
+                    <a-popconfirm content="确定要彻底删除该联系人吗？" @ok="deleteSingleInvalidContact(record.wxid)">
+                      <a-link status="danger">删除</a-link>
+                    </a-popconfirm>
+                  </template>
+                </a-table-column>
+              </template>
+            </a-table>
+          </div>
         </a-tab-pane>
       </a-tabs>
     </div>
@@ -338,6 +409,7 @@ import { adminApi } from '@/api/modules/admin';
 import { messageApi } from '@/api/modules/im';
 import { contactCache } from '@/utils/contactCache';
 import { Message } from '@arco-design/web-vue';
+import { IconSearch, IconDelete } from '@arco-design/web-vue/es/icon';
 
 const props = defineProps<{
   visible: boolean;
@@ -366,6 +438,7 @@ const adminActionData = ref<any>(null);
 
 const contactLoading = ref(false);
 const friendListLoading = ref(false);
+const syncSelfProfileLoading = ref(false);
 const saveAllContactsLoading = ref(false);
 
 const cacheStats = ref({ 
@@ -481,6 +554,39 @@ const handleSaveAllContactsToRedis = async () => {
   }
 };
 
+const handleSyncSelfProfile = async () => {
+  const uuid = accountStore.activeAccountUuid;
+  const acc = accountStore.accounts.find(a => a.uuid === uuid);
+  if (!acc || !uuid || !acc.sessionKey) return Message.warning('请先选择活跃账号');
+
+  try {
+    syncSelfProfileLoading.value = true;
+    Message.info('正在向微信后端同步自身个人资料与最新头像...');
+    const result = await accountStore.fetchProfileAndFixUuid(acc.sessionKey);
+    console.log('[AccountStore:SyncSelfProfile] 手动同步个人资料结果:', result);
+    // 同步完成二次触发预加载以刷新内存
+    await accountStore.preloadOfflineAccountAvatars();
+    
+    if (result && result.realAvatar) {
+      Message.success({
+        content: `自身个人资料与最新头像已手动同步成功！头像URL: ${result.realAvatar.substring(0, 60)}...`,
+        duration: 8000,
+        closable: true
+      });
+    } else {
+      Message.warning({
+        content: '同步完成，但未能从微信后端结构中读取到任何头像 URL 字段 (可能微信官方个人资料尚未更新头像)。',
+        duration: 8000,
+        closable: true
+      });
+    }
+  } catch (err: any) {
+    Message.error('资料同步失败: ' + (err.message || err));
+  } finally {
+    syncSelfProfileLoading.value = false;
+  }
+};
+
 const handleGetFriendList = async () => {
   const uuid = accountStore.activeAccountUuid;
   const acc = accountStore.accounts.find(a => a.uuid === uuid);
@@ -591,6 +697,118 @@ const handleClearCache = async () => {
   Message.success(`已清空${uuid ? '当前账号的' : '所有'}本地数据`);
   await loadCacheStats();
 };
+
+const isScanningInvalid = ref(false);
+const invalidContactsList = ref<any[]>([]);
+const selectedInvalidRowKeys = ref<string[]>([]);
+
+const invalidRowSelection = {
+  type: 'checkbox',
+  showCheckedAll: true,
+};
+
+const scanInvalidContacts = async () => {
+  const uuid = accountStore.activeAccountUuid;
+  if (!uuid) {
+    Message.warning('当前未选定账号');
+    return;
+  }
+
+  isScanningInvalid.value = true;
+  selectedInvalidRowKeys.value = [];
+  try {
+    // 1. 从 IndexedDB 加载当前账号的所有联系人缓存
+    const contacts = await contactCache.getAll(uuid);
+    
+    // 2. 筛选出失效联系人 (friendRelation 为 3 被删, 2 被拉黑, 0 陌生人, 或带有 isDeleted=true)
+    const list = contacts.filter((c: any) => {
+      if (!c) return false;
+      const relation = c.friendRelation !== undefined ? c.friendRelation : -1;
+      return relation === 0 || relation === 2 || relation === 3 || c.isDeleted === true;
+    }).map((c: any) => {
+      const wxid = c.userName?.str || c.UserName?.str || c.wxid || c.userName;
+      const nick = c.nickName || c.NickName || c.nickname;
+      const nickStr = nick && typeof nick === 'object' ? nick.str : nick || '';
+      const remark = c.remark || c.Remark;
+      const remarkStr = remark && typeof remark === 'object' ? remark.str : remark || '';
+      const displayName = remarkStr || nickStr || wxid || '未知';
+      
+      const relation = c.friendRelation !== undefined ? c.friendRelation : -1;
+      let relationLabel = '陌生人';
+      let relationColor = 'orange';
+      if (relation === 3 || c.isDeleted === true) {
+        relationLabel = '对方已删除您';
+        relationColor = 'red';
+      } else if (relation === 2) {
+        relationLabel = '对方已拉黑您';
+        relationColor = 'red';
+      }
+
+      const processedAvatar = accountStore.getContactAvatar(c);
+
+      return {
+        wxid,
+        nickname: displayName,
+        avatar: processedAvatar,
+        relation,
+        relationLabel,
+        relationColor
+      };
+    });
+
+    invalidContactsList.value = list;
+    Message.success(`扫描完成，共找到 ${list.length} 个失效联系人`);
+  } catch (err: any) {
+    Message.error(`扫描失败: ${err.message || err}`);
+  } finally {
+    isScanningInvalid.value = false;
+  }
+};
+
+const deleteSingleInvalidContact = async (wxid: string) => {
+  try {
+    await accountStore.deleteContact(wxid);
+    invalidContactsList.value = invalidContactsList.value.filter(c => c.wxid !== wxid);
+    selectedInvalidRowKeys.value = selectedInvalidRowKeys.value.filter(k => k !== wxid);
+    Message.success('已彻底删除该失效联系人及本地缓存');
+  } catch (err: any) {
+    Message.error(`删除失败: ${err.message || err}`);
+  }
+};
+
+const batchDeleteInvalidContacts = async () => {
+  const toDelete = [...selectedInvalidRowKeys.value];
+  if (toDelete.length === 0) return;
+
+  isScanningInvalid.value = true;
+  try {
+    let successCount = 0;
+    for (const wxid of toDelete) {
+      try {
+        await accountStore.deleteContact(wxid);
+        successCount++;
+      } catch (e) {
+        console.warn(`批量删除联系人 ${wxid} 失败:`, e);
+      }
+    }
+    
+    invalidContactsList.value = invalidContactsList.value.filter(c => !toDelete.includes(c.wxid));
+    selectedInvalidRowKeys.value = [];
+    Message.success(`批量清理完成！成功删除 ${successCount} 个失效联系人及所有缓存`);
+    await loadCacheStats();
+  } catch (err: any) {
+    Message.error(`批量删除失败: ${err.message || err}`);
+  } finally {
+    isScanningInvalid.value = false;
+  }
+};
+
+// 监听 Tab 切换，切换到失效联系人面板时自动扫描
+watch(() => activeAdminTab.value, (newKey) => {
+  if (newKey === 'invalid_contacts') {
+    scanInvalidContacts();
+  }
+});
 </script>
 
 <style scoped>

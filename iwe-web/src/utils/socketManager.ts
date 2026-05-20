@@ -161,13 +161,33 @@ class GlobalSocketManager {
 
     const rawType = Number(msg.Type || msg.MsgType || msg.msg_type || 0);
 
-    // 1. 拦截并处理联系人同步消息 (Type 10001)
+    // 1. 拦截并处理联系人同步与删除消息 (Type 10001)
     if (rawType === 10001) {
-      if (msg.ModContacts) {
-        if (isDebug('socket')) console.log(`[Socket:${userName}] 收到联系人同步 (Type 10001)，更新内存镜像`);
-        msg.ModContacts.forEach((contact: any) => {
+      // 1.1 修改/更新联系人
+      const modContacts = msg.ModContacts || msg.modContacts || msg.ModContactList || msg.modContactList;
+      if (modContacts && Array.isArray(modContacts)) {
+        if (isDebug('socket')) console.log(`[Socket:${userName}] 收到联系人同步/修改 (Type 10001)，更新内存与 DB`);
+        modContacts.forEach((contact: any) => {
           const wxid = contact.userName?.str || contact.UserName?.str || contact.wxid || contact.userName;
           if (wxid) accountStore.updateContact(wxid, contact, userName);
+        });
+      }
+
+      // 1.2 删除联系人 (重要！客户端/手机端删除好友时，微信服务器推送 DelContacts，这里标记为“被删”关系)
+      const delContacts = msg.DelContacts || msg.delContacts || msg.DelContactList || msg.delContactList;
+      if (delContacts && Array.isArray(delContacts)) {
+        if (isDebug('socket')) console.log(`[Socket:${userName}] 收到联系人删除通知 (Type 10001)，开始标记状态`);
+        delContacts.forEach(async (contact: any) => {
+          const wxid = contact.userName?.str || contact.UserName?.str || contact.wxid || contact.userName;
+          if (wxid) {
+            console.log(`[Socket:${userName}] 监听到客户端删除好友事件，自动标记为“被删”关系: ${wxid}`);
+            
+            // 将关系修改为 3 (被删)，并写入 isDeleted 标记，保留数据供用户查看或在齿轮控制台批量清理
+            await accountStore.updateContact(wxid, {
+              friendRelation: 3,
+              isDeleted: true
+            }, userName, false);
+          }
         });
       }
       return;

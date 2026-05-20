@@ -1,4 +1,152 @@
-/* Home page layout and custom scrollbar rules */
+.admin-panel { padding: 10px 0; }
+.admin-actions { margin-top: 10px; }
+.admin-result-panel {
+  margin-top: 20px;
+  background: #000;
+  border-radius: 4px;
+  padding: 10px;
+  border: 1px solid #2e2e2e;
+}
+.admin-table-container {
+  margin-top: 10px;
+  background: #1a1a1a;
+  border-radius: 4px;
+}
+:deep(.arco-table-container) {
+  border: 1px solid #2e2e2e;
+}
+.result-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  color: #86909c;
+  font-size: 12px;
+}
+.result-content {
+  margin: 0;
+  font-size: 12px;
+  color: #07c160;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.workbench { display: flex; height: 100vh; width: 100vw; overflow: hidden; background: #171717; color: #e5e6eb; }
+.column { height: 100%; display: flex; flex-direction: column; }
+.account-bar { 
+  width: 68px; 
+  background: #0f1015; /* Sleek futuristic deep dark blue-grey */
+  align-items: center; 
+  padding: 16px 0; 
+  border-right: 1px solid rgba(255, 255, 255, 0.05); 
+  display: flex; 
+  flex-direction: column; 
+  height: 100vh; 
+  flex-shrink: 0;
+  z-index: 10;
+}
+
+.account-bar-logo {
+  width: 40px;
+  height: 40px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.logo-inner {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: rgba(7, 193, 96, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(7, 193, 96, 0.2);
+  color: #07c160;
+  box-shadow: 0 0 10px rgba(7, 193, 96, 0.15);
+}
+
+.bar-divider {
+  width: 32px;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.08);
+  margin: 12px 0;
+}
+
+.account-list { 
+  flex: 1; 
+  display: flex; 
+  flex-direction: column; 
+  align-items: center; 
+  width: 100%; 
+  overflow-y: auto; 
+  scrollbar-width: none; /* Hide scrollbar for layout purity */
+}
+.account-list::-webkit-scrollbar {
+  display: none;
+}
+
+.account-item { 
+  margin-bottom: 14px; 
+  cursor: pointer; 
+  position: relative; 
+  width: 100%; 
+  display: flex; 
+  justify-content: center; 
+  align-items: center;
+  padding: 2px 0;
+}
+
+.active-indicator {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 4px;
+  height: 0;
+  background: #07c160;
+  border-radius: 0 4px 4px 0;
+  transition: all 0.3s cubic-bezier(0.18, 0.89, 0.32, 1.28);
+  opacity: 0;
+}
+
+.account-item.active .active-indicator {
+  height: 32px;
+  opacity: 1;
+}
+
+.account-item:hover:not(.active) .active-indicator {
+  height: 20px;
+  opacity: 0.6;
+}
+
+.avatar-wrapper {
+  position: relative;
+  transition: all 0.3s cubic-bezier(0.18, 0.89, 0.32, 1.28);
+}
+
+/* 璐﹀彿鍦ㄧ嚎鏃剁殑鑽у厜妗嗘晥鏋?*/
+:deep(.acc-avatar.arco-avatar-square.online-neon) {
+  border: 2.2px solid #00b42a !important;
+  box-shadow: 0 0 10px rgba(0, 180, 42, 0.75), inset 0 0 4px rgba(0, 180, 42, 0.45) !important;
+  animation: neon-pulse 2s infinite alternate ease-in-out;
+}
+
+@keyframes neon-pulse {
+  0% {
+    box-shadow: 0 0 4px rgba(0, 180, 42, 0.45), inset 0 0 1.5px rgba(0, 180, 42, 0.2);
+  }
+  100% {
+    box-shadow: 0 0 14px rgba(0, 180, 42, 0.85), inset 0 0 7px rgba(0, 180, 42, 0.5);
+  }
+}
+
+.account-item:hover .avatar-wrapper {
+  transform: scale(1.05);
+}
 
 .account-item.active .avatar-wrapper {
   transform: scale(1.02);
@@ -68,7 +216,7 @@
 
 .account-bar-footer {
   margin-top: auto;
-  padding-bottom: 20px;
+  padding-bottom: 20px; /* Lift wrench icon up safely */
   display: flex;
   justify-content: center;
   width: 100%;
@@ -95,9 +243,9 @@
 /* --- Navigation Bar (2nd Column) --- */
 .nav-bar { 
   width: 60px; 
-  background: #14151a; 
+  background: #14151a; /* Balanced mid-dark grey-blue */
   align-items: center; 
-  padding: 16px 0 0 0; 
+  padding: 16px 0 0 0; /* Changed bottom padding to 0, footer will handle spacing */
   border-right: 1px solid rgba(255, 255, 255, 0.05); 
   display: flex; 
   flex-direction: column; 
@@ -177,7 +325,7 @@
 
 .nav-bar-footer {
   margin-top: auto;
-  padding-bottom: 20px;
+  padding-bottom: 20px; /* Lift gear and plus icons up safely */
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -286,7 +434,6 @@
   background: rgba(255, 255, 255, 0.05);
   transform: scale(1.1);
 }
-
 .chat-list { width: 280px; background: #232323; border-right: 1px solid #2e2e2e; }
 .list-search { padding: 15px; }
 .scroll-area { flex: 1; overflow-y: auto; }
@@ -382,12 +529,13 @@
 .contact-tabs .tab-item { flex: 1; text-align: center; font-size: 12px; cursor: pointer; color: #86909c; padding: 4px 0; border-radius: 4px; transition: all 0.2s; }
 .contact-tabs .tab-item.active { background: #2e2e2e; color: #07c160; font-weight: bold; }
 
-/* --- Mobile Adaptation (手机端适配) --- */
+/* --- Mobile Adaptation (鎵嬫満绔€傞厤) --- */
 .chat-header-back {
   display: none;
 }
 
 @media (max-width: 768px) {
+  /* Hide or show columns based on active chat */
   .workbench.has-active-chat .account-bar,
   .workbench.has-active-chat .nav-bar,
   .workbench.has-active-chat .chat-list {
@@ -417,6 +565,7 @@
     display: flex !important;
   }
 
+  /* Scale down sizing for mobile comfort */
   .acc-avatar {
     width: 40px !important;
     height: 40px !important;
@@ -440,6 +589,7 @@
     height: 36px !important;
   }
   
+  /* Mobile back button in chat header */
   .chat-header {
     padding: 0 12px !important;
     gap: 8px;
@@ -458,10 +608,12 @@
     margin-left: 2px;
   }
   
+  /* Message layout on mobile */
   .msg-bubble {
     max-width: 85% !important;
   }
   
+  /* Input area size adjustments */
   .input-section {
     height: 120px !important;
   }
@@ -470,11 +622,13 @@
     font-size: 14px !important;
   }
   
+  /* Premium mobile modal sizing */
   :deep(.arco-modal) {
     width: 95% !important;
     max-width: 550px !important;
   }
 
+  /* Adaptive layout for settings controls within modals */
   .store-item {
     flex-direction: column !important;
     align-items: flex-start !important;
@@ -491,6 +645,8 @@
     justify-content: flex-start !important;
   }
 }
+
+
 
 /* Global overrides for Arco Design modals that are teleported to the body */
 @media (max-width: 768px) {
@@ -526,3 +682,115 @@
     width: 100% !important;
   }
 }
+
+/* Centralized Specific Component Rules */
+.revoked-tag {
+  font-size: 11px;
+  color: #ee4d2d;
+  margin-top: 4px;
+}
+.empty-holder .hint {
+  margin-top: 12px;
+  font-size: 14px;
+}
+.empty-holder .sub-hint {
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+/* 好友关系检测与防爆粉风控相关样式 */
+.title-area {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  overflow: hidden;
+}
+
+.relation-tag {
+  border-radius: 4px;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.header-actions {
+  margin-left: auto;
+  flex-shrink: 0;
+  display: flex;
+  gap: 8px;
+}
+
+.relation-btn, .refresh-btn, .delete-btn {
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.risk-warning-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(255, 125, 0, 0.1);
+  border-bottom: 1px solid rgba(255, 125, 0, 0.2);
+  padding: 8px 16px;
+  color: #ff7d00;
+  font-size: 12px;
+  line-height: 1.5;
+  animation: slide-down 0.3s cubic-bezier(0.18, 0.89, 0.32, 1.28);
+}
+
+.risk-warning-bar :deep(.arco-icon) {
+  flex-shrink: 0;
+  font-size: 14px;
+}
+
+@keyframes slide-down {
+  from {
+    transform: translateY(-100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.relation-badge :deep(.arco-badge-custom-text) {
+  font-size: 9px !important;
+  font-weight: bold;
+  padding: 1px 4px !important;
+  border-radius: 4px !important;
+  transform: scale(0.85) translate(4px, -4px) !important;
+  box-shadow: 0 0 6px rgba(0, 0, 0, 0.6) !important;
+}
+
+/* 🚀 对话框删除按钮 hover 显示样式 */
+.conv-item {
+  position: relative;
+}
+
+.delete-conv-btn {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  display: none;
+  color: #86909c;
+  cursor: pointer;
+  border-radius: 50%;
+  padding: 2px;
+  background: rgba(255, 255, 255, 0.08);
+  transition: all 0.2s;
+  z-index: 10;
+}
+
+.conv-item:hover .delete-conv-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.delete-conv-btn:hover {
+  color: #f53f3f !important;
+  background: rgba(245, 63, 63, 0.18) !important;
+  transform: scale(1.1);
+}
+

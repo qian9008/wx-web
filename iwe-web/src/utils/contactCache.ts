@@ -256,6 +256,28 @@ export const contactCache = {
     });
   },
 
+  async deleteContact(wxid: string, accountUuid: string) {
+    if (!accountUuid) return;
+    const db = await this.init();
+    return new Promise((resolve) => {
+      const transaction = db.transaction(STORE_NAME, 'readwrite');
+      const store = transaction.objectStore(STORE_NAME);
+      store.delete(`${accountUuid}_${wxid}`);
+      transaction.oncomplete = () => resolve(true);
+    });
+  },
+
+  async deleteConversation(wxid: string, accountUuid: string) {
+    if (!accountUuid) return;
+    const db = await this.init();
+    return new Promise((resolve) => {
+      const transaction = db.transaction(CONV_STORE, 'readwrite');
+      const store = transaction.objectStore(CONV_STORE);
+      store.delete(`${accountUuid}_${wxid}`);
+      transaction.oncomplete = () => resolve(true);
+    });
+  },
+
   async getCount(storeName = STORE_NAME, accountUuid?: string) {
     const db = await this.init();
     return new Promise<number>((resolve) => {

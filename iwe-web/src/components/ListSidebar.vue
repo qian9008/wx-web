@@ -16,7 +16,7 @@
         >
           <a-badge :count="conv.unread" :dot="false" class="avatar-badge">
             <a-avatar :size="42" shape="square" :style="{ backgroundColor: '#ffb400' }">
-              <img v-if="getConvAvatar(conv)" :src="getConvAvatar(conv)" loading="lazy" />
+              <img v-if="getConvAvatar(conv)" :src="getConvAvatar(conv)" referrerpolicy="no-referrer" loading="lazy" />
               <template v-else>{{ getConvName(conv) ? getConvName(conv)[0] : 'C' }}</template>
             </a-avatar>
           </a-badge>
@@ -25,7 +25,10 @@
               <span class="name">{{ getConvName(conv) }}</span>
               <span class="time">{{ formatTime(conv.time) }}</span>
             </div>
-            <div class="desc">{{ formatText(conv.lastMsg) }}</div>
+            <div class="desc">
+              <span class="desc-text">{{ formatText(conv.lastMsg) }}</span>
+              <icon-close class="delete-conv-btn" @click.stop="handleDeleteConv(conv.wxid)" />
+            </div>
           </div>
         </div>
       </div>
@@ -57,16 +60,27 @@
             @click="emit('selectContact', contact)"
             v-lazy-contact="getContactId(contact)"
           >
-            <a-avatar :size="42" shape="square" :style="{ backgroundColor: '#337ecc' }">
+            <a-badge 
+              v-if="getContactRelation(contact) !== undefined"
+              :text="getRelationText(getContactRelation(contact))"
+              :color="getRelationColor(getContactRelation(contact))"
+              class="relation-badge"
+            >
+              <a-avatar :size="42" shape="square" :style="{ backgroundColor: '#337ecc' }">
+                <img v-if="visibleAvatars[getContactId(contact)] && accountStore.getContactAvatar(contact)" :src="accountStore.getContactAvatar(contact)" referrerpolicy="no-referrer" loading="lazy" />
+                <template v-else>{{ getContactName(contact)[0] }}</template>
+              </a-avatar>
+            </a-badge>
+            <a-avatar v-else :size="42" shape="square" :style="{ backgroundColor: '#337ecc' }">
               <!-- 🚀 优化：只有当该联系人真正进入可见视口，才挂载 <img> 并发起网络请求加载头像 -->
-              <img v-if="visibleAvatars[getContactId(contact)] && getContactAvatar(contact)" :src="accountStore.avatarBlobMap[getContactAvatar(contact)] || getContactAvatar(contact)" referrerpolicy="no-referrer" loading="lazy" />
+              <img v-if="visibleAvatars[getContactId(contact)] && accountStore.getContactAvatar(contact)" :src="accountStore.getContactAvatar(contact)" referrerpolicy="no-referrer" loading="lazy" />
               <template v-else>{{ getContactName(contact)[0] }}</template>
             </a-avatar>
             <div class="info">
               <div class="title">
                 <span class="name">{{ getContactName(contact) }}</span>
               </div>
-              <div class="desc">{{ getContactId(contact) }}</div>
+              <div class="desc">{{ getContactAlias(contact) }}</div>
             </div>
           </div>
         </div>
@@ -82,14 +96,14 @@
           >
             <a-avatar :size="42" shape="square" :style="{ backgroundColor: '#337ecc' }">
               <!-- 🚀 优化：只有当该联系人真正进入可见视口，才挂载 <img> 并发起网络请求加载头像 -->
-              <img v-if="visibleAvatars[getContactId(contact)] && getContactAvatar(contact)" :src="accountStore.avatarBlobMap[getContactAvatar(contact)] || getContactAvatar(contact)" referrerpolicy="no-referrer" loading="lazy" />
+              <img v-if="visibleAvatars[getContactId(contact)] && accountStore.getContactAvatar(contact)" :src="accountStore.getContactAvatar(contact)" referrerpolicy="no-referrer" loading="lazy" />
               <template v-else>{{ getContactName(contact)[0] }}</template>
             </a-avatar>
             <div class="info">
               <div class="title">
                 <span class="name">{{ getContactName(contact) }}</span>
               </div>
-              <div class="desc">{{ getContactId(contact) }}</div>
+              <div class="desc">{{ getContactAlias(contact) }}</div>
             </div>
           </div>
         </div>
@@ -105,14 +119,14 @@
           >
             <a-avatar :size="42" shape="square" :style="{ backgroundColor: '#337ecc' }">
               <!-- 🚀 优化：只有当该联系人真正进入可见视口，才挂载 <img> 并发起网络请求加载头像 -->
-              <img v-if="visibleAvatars[getContactId(contact)] && getContactAvatar(contact)" :src="accountStore.avatarBlobMap[getContactAvatar(contact)] || getContactAvatar(contact)" referrerpolicy="no-referrer" loading="lazy" />
+              <img v-if="visibleAvatars[getContactId(contact)] && accountStore.getContactAvatar(contact)" :src="accountStore.getContactAvatar(contact)" referrerpolicy="no-referrer" loading="lazy" />
               <template v-else>{{ getContactName(contact)[0] }}</template>
             </a-avatar>
             <div class="info">
               <div class="title">
                 <span class="name">{{ getContactName(contact) }}</span>
               </div>
-              <div class="desc">{{ getContactId(contact) }}</div>
+              <div class="desc">{{ getContactAlias(contact) }}</div>
             </div>
           </div>
         </div>
@@ -126,6 +140,9 @@ import { ref, reactive, watch, computed } from 'vue';
 import { useAccountStore } from '@/store/account';
 import { useChatStore } from '@/store/chat';
 import dayjs from 'dayjs';
+import { IconClose } from '@arco-design/web-vue/es/icon';
+import { Message } from '@arco-design/web-vue';
+import { contactCache } from '@/utils/contactCache';
 
 const props = defineProps<{
   activeTab: 'chat' | 'contact';
@@ -163,7 +180,8 @@ watch(() => accountStore.activeAccountUuid, () => {
 });
 
 const getContactId = (c: any) => {
-  return c.userName?.str || c.UserName?.str || c.wxid || c.userName || c.UserName || '';
+  const user = c.userName || c.UserName || c.wxid;
+  return String((user && typeof user === 'object') ? (user.str || '') : (user || ''));
 };
 
 const getContactName = (c: any) => {
@@ -174,11 +192,12 @@ const getContactName = (c: any) => {
   return remarkStr || nickStr || getContactId(c) || '未知';
 };
 
-const getContactAvatar = (c: any) => {
-  const url = c.smallHeadImgUrl || c.SmallHeadImgUrl || c.headImgUrl || c.HeadImgUrl || c.avatar || '';
-  const rawUrl = typeof url === 'string' ? url.trim().replace(/`/g, '') : '';
-  if (!rawUrl) return '';
-  return accountStore.avatarBlobMap[rawUrl] || rawUrl;
+const getContactAlias = (c: any) => {
+  if (!c) return '';
+  const alias = c.alias || c.Alias;
+  const aliasStr = (alias && typeof alias === 'object') ? alias.str : alias;
+  if (aliasStr && aliasStr.trim()) return aliasStr.trim();
+  return getContactId(c);
 };
 
 const getConvName = (conv: any) => {
@@ -208,6 +227,9 @@ const getConvAvatar = (conv: any) => {
     }
   }
   if (!rawUrl) return '';
+  if (rawUrl.startsWith('http://')) {
+    rawUrl = rawUrl.replace('http://', 'https://');
+  }
   accountStore.getAvatarUrl(rawUrl);
   return accountStore.avatarBlobMap[rawUrl] || rawUrl;
 };
@@ -241,7 +263,10 @@ const sortedContacts = computed(() => {
       const remark = c.remark || c.Remark;
       const remarkStr = String((remark && typeof remark === 'object') ? remark.str : remark || '').toLowerCase();
       
-      return id.includes(q) || name.includes(q) || nickStr.includes(q) || remarkStr.includes(q);
+      const alias = c.alias || c.Alias;
+      const aliasStr = String((alias && typeof alias === 'object') ? alias.str : alias || '').toLowerCase();
+      
+      return id.includes(q) || aliasStr.includes(q) || name.includes(q) || nickStr.includes(q) || remarkStr.includes(q);
     });
   }
 
@@ -296,7 +321,7 @@ const currentConversations = computed(() => {
     return detail ? {
       ...c,
       nickname: getContactName(detail),
-      avatar: getContactAvatar(detail)
+      avatar: accountStore.getContactAvatar(detail)
     } : c;
   });
 
@@ -331,21 +356,48 @@ const lazyObserver = new IntersectionObserver((entries) => {
       const wxid = entry.target.getAttribute('data-wxid');
       if (wxid) {
         visibleAvatars[wxid] = true;
-        accountStore.enqueueContactDetails(wxid);
         
         const contact = accountStore.contactMap[wxid];
-        if (contact) {
+        const isPlaceholder = !contact || contact.isPlaceholder;
+        
+        // 🚀 核心优化 1：只有在没有资料（完全不存在，或者是占位符）时才触发详情补全接口请求，有详情的联系人跳过请求 API
+        if (isPlaceholder) {
+          accountStore.enqueueContactDetails(wxid);
+        } else {
+          // 🚀 核心优化 2：只有是常规可访问的 HTTP 链接才触发本地 Blob 缓存；srt2ihe 这种微信原生不可直连的协议头直接跳过，避免无效 fetch 报错
           const url = contact.smallHeadImgUrl || contact.SmallHeadImgUrl || contact.headImgUrl || contact.HeadImgUrl || contact.avatar || '';
           const rawUrl = typeof url === 'string' ? url.trim().replace(/`/g, '') : '';
-          if (rawUrl) {
+          const isHttpUrl = rawUrl.startsWith('http://') || rawUrl.startsWith('https://');
+          if (rawUrl && isHttpUrl) {
             accountStore.getAvatarUrl(rawUrl);
           }
         }
+        
         lazyObserver.unobserve(entry.target);
       }
     }
   });
 }, { rootMargin: '100px' });
+
+const getContactRelation = (c: any) => {
+  return c?.friendRelation;
+};
+
+const getRelationText = (r: number | undefined) => {
+  if (r === 0) return '陌生';
+  if (r === 1) return '好友';
+  if (r === 2) return '拉黑';
+  if (r === 3) return '被删';
+  return '';
+};
+
+const getRelationColor = (r: number | undefined) => {
+  if (r === 0) return '#ff7d00';
+  if (r === 1) return '#00b42a';
+  if (r === 2) return '#f53f3f';
+  if (r === 3) return '#f53f3f';
+  return '#86909c';
+};
 
 const vLazyContact = {
   mounted: (el: HTMLElement, binding: any) => {
@@ -360,113 +412,41 @@ const vLazyContact = {
     lazyObserver.unobserve(el);
   }
 };
+
+const handleDeleteConv = async (wxid: string) => {
+  const userName = accountStore.activeAccountUuid;
+  if (!userName) return;
+  
+  try {
+    // 1. 从内存和 IndexedDB 中清理会话记录
+    if (chatStore.accountConversations[userName]) {
+      chatStore.accountConversations[userName] = chatStore.accountConversations[userName].filter(c => c.wxid !== wxid);
+    }
+    await contactCache.deleteConversation(wxid, userName);
+
+    // 2. 核心联动：“删除对话框时触发清空资料” -> 彻底清空联系人信息
+    // 🚀 【智能守护机制】：
+    // A. 如果是正常好友 (friendRelation === 1)，仅关闭对话框并清理聊天记录，保留通讯录好友资料，防止其从好友列表中消失！
+    // B. 如果是失效联系人 (对方已删 3 / 对方已拉黑 2 / 陌生人 0 / 临时占位符等)，则触发深度物理清空，抹去本地一切缓存！
+    const contact = accountStore.contactMap[wxid];
+    const relation = contact?.friendRelation;
+    const isPlaceholder = !contact || contact.isPlaceholder;
+
+    if (isPlaceholder || relation === 0 || relation === 2 || relation === 3 || contact?.isDeleted) {
+      await accountStore.deleteContact(wxid);
+      Message.success('已清空该对话框并彻底清除失效联系人本地缓存');
+    } else {
+      Message.success('已关闭该对话框（已保留通讯录好友资料）');
+    }
+
+    // 3. 如果当前处于该聊天视窗，自动切退
+    if (props.activeId === wxid) {
+      emit('selectChat', '');
+    }
+  } catch (err: any) {
+    Message.error(`清理失败: ${err.message || err}`);
+  }
+};
 </script>
 
-<style scoped>
-.column {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-}
-/* 第三栏：列表展示 */
-.chat-list {
-  width: 280px;
-  background: #181818;
-  border-right: 1px solid #222222;
-  flex-shrink: 0;
-}
-.list-search {
-  padding: 15px 12px;
-  border-bottom: 1px solid #222222;
-}
-.scroll-area {
-  flex: 1;
-  overflow-y: auto;
-}
-.scroll-area::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-.scroll-area::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.15);
-  border-radius: 10px;
-}
-.scroll-area::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.3);
-}
-.scroll-area::-webkit-scrollbar-track {
-  background: transparent;
-}
-.conv-item {
-  display: flex;
-  padding: 12px 15px;
-  border-bottom: 1px solid #222222;
-  cursor: pointer;
-  align-items: center;
-  transition: all 0.2s;
-  background: transparent;
-}
-.conv-item:hover {
-  background: #2a2a2a;
-}
-.conv-item.active {
-  background: #2e2e2e;
-}
-.conv-item .info {
-  flex: 1;
-  margin-left: 12px;
-  min-width: 0;
-}
-.conv-item .title {
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 4px;
-}
-.conv-item .name {
-  font-weight: 500;
-  font-size: 14px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: #e5e6eb;
-}
-.conv-item .time {
-  font-size: 12px;
-  color: #86909c;
-}
-.conv-item .desc {
-  font-size: 12px;
-  color: #86909c;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.avatar-badge :deep(.arco-badge-status-dot) {
-  width: 8px;
-  height: 8px;
-}
-.contact-tabs {
-  display: flex;
-  padding: 10px;
-  background: #1a1a1a;
-  border-bottom: 1px solid #2e2e2e;
-  position: sticky;
-  top: 0;
-  z-index: 10;
-}
-.contact-tabs .tab-item {
-  flex: 1;
-  text-align: center;
-  font-size: 12px;
-  cursor: pointer;
-  color: #86909c;
-  padding: 4px 0;
-  border-radius: 4px;
-  transition: all 0.2s;
-}
-.contact-tabs .tab-item.active {
-  background: #2e2e2e;
-  color: #07c160;
-  font-weight: bold;
-}
-</style>
+

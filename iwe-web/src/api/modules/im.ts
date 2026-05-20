@@ -83,6 +83,14 @@ export const messageApi = {
   getFriendList: (license: string) => 
     request.get(`/friend/GetFriendList?key=${license}`),
 
+  // 获取单个好友关系
+  getFriendRelation: (license: string, username: string) => 
+    request.post(`/friend/GetFriendRelation?key=${license}`, { UserName: username }),
+
+  // 删除好友
+  delContact: (license: string, username: string) => 
+    request.post(`/friend/DelContact?key=${license}`, { DelUserName: username }),
+
   getMsgBigImg: (license: string, fromUser: string, toUser: string, msgId: number) => 
     request.post(`/message/GetMsgBigImg?key=${license}`, {
       CompressType: 0,
