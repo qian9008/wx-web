@@ -47,6 +47,11 @@ class BoundedSet {
     }
   }
 
+  clear(): void {
+    this.set.clear();
+    this.queue = [];
+  }
+
   get size(): number {
     return this.set.size;
   }
@@ -406,6 +411,21 @@ export const useChatStore = defineStore('chat', {
       }
 
       console.log(`[ChatStore] 数据已从 ${oldUuid} 迁移至 ${newUuid}`);
+    },
+
+    clearMemoryAll(userName?: string) {
+      if (userName) {
+        if (this.accountMessages[userName]) {
+          this.accountMessages[userName] = {};
+        }
+        if (this.accountConversations[userName]) {
+          this.accountConversations[userName] = [];
+        }
+      } else {
+        this.accountMessages = {};
+        this.accountConversations = {};
+      }
+      this._msgIdDedup.clear();
     },
 
     // 独立清理并持久化未读数

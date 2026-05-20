@@ -5,7 +5,7 @@ import { socketManager } from '@/utils/socketManager';
 import { contactCache } from '@/utils/contactCache';
 import { useChatStore } from './chat';
 import request from '@/utils/request';
-import { isDebug } from '@/utils/debug';
+import { isDebug, syncDebugConfig } from '@/utils/debug';
 import { Message } from '@arco-design/web-vue';
 
 // 模块级防抖定时器
@@ -193,11 +193,13 @@ export const useAccountStore = defineStore('account', {
       localStorage.setItem('ADMIN_KEY', adminKey);
       localStorage.setItem('TOKEN_KEY', tokenKey);
       localStorage.setItem('debug_config', JSON.stringify(this.debug));
+      syncDebugConfig(this.debug);
     },
 
     updateDebugConfig(config: Partial<DebugConfig>) {
       this.debug = { ...this.debug, ...config };
       localStorage.setItem('debug_config', JSON.stringify(this.debug));
+      syncDebugConfig(this.debug);
     },
 
     updateAvatarConfig(config: Partial<AvatarConfig>, isGlobal = false) {
@@ -1359,6 +1361,23 @@ export const useAccountStore = defineStore('account', {
         }
       }
       return '';
+    },
+
+    clearMemoryAll(userName?: string) {
+      if (userName) {
+        delete this.lastSyncTimeMap[userName];
+        delete this.syncLockMap[userName];
+        delete this.isContactListLoadedMap[userName];
+        if (this.accountContactMaps[userName]) {
+          this.accountContactMaps[userName] = {};
+        }
+      } else {
+        this.lastSyncTimeMap = {};
+        this.syncLockMap = {};
+        this.isContactListLoadedMap = {};
+        this.accountContactMaps = {};
+      }
+      console.log(`[AccountStore] 已成功清除内存中\${userName ? '指定账号 ' + userName : '所有账号'}的同步锁、同步时间及联系人镜像`);
     }
   }
 });
