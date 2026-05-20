@@ -12,6 +12,20 @@ import { Message } from '@arco-design/web-vue';
 let redisSyncDebounceTimer: any = null;
 let redisWritebackDebounceTimer: any = null;
 
+const extractAvatarString = (obj: any): string => {
+  if (!obj) return '';
+  if (typeof obj === 'string') return obj;
+  if (typeof obj === 'object') {
+    if (obj.str && typeof obj.str === 'string') return obj.str;
+    if (obj.Str && typeof obj.Str === 'string') return obj.Str;
+    if (obj.Url && typeof obj.Url === 'string') return obj.Url;
+    if (obj.url && typeof obj.url === 'string') return obj.url;
+    if (obj.Val && typeof obj.Val === 'string') return obj.Val;
+    if (obj.val && typeof obj.val === 'string') return obj.val;
+  }
+  return '';
+};
+
 
 interface Account {
   uuid: string;
@@ -19,6 +33,7 @@ interface Account {
   nickname: string;
   avatar: string;
   status: 'online' | 'offline';
+  alias?: string;
 }
 
 interface DebugConfig {
@@ -144,7 +159,7 @@ export const useAccountStore = defineStore('account', {
       try {
         console.log('[AccountStore] 冷启动触发自动提取并保存62数据...');
         const res: any = await loginApi.get62Data(license);
-        let dataVal = '';
+        let dataVal: any = '';
         if (res) {
           if (typeof res === 'string') {
             dataVal = res;
@@ -406,6 +421,41 @@ export const useAccountStore = defineStore('account', {
       console.log(`[AccountStore:Redis] 账号 ${uuid} 的联系人加载完成，已解除 Redis 自动回写锁定。`);
     },
 
+    async preloadOfflineAccountAvatars() {
+      for (const acc of this.accounts) {
+        if (acc.uuid && !acc.uuid.startsWith('license-') && !acc.uuid.startsWith('token-')) {
+          try {
+            // 从对应账号的 IndexedDB 中读取自身资料
+            const selfContact = (await contactCache.get(acc.uuid, acc.uuid)) as any;
+            if (selfContact) {
+              if (!this.accountContactMaps[acc.uuid]) {
+                this.accountContactMaps[acc.uuid] = {};
+              }
+              this.accountContactMaps[acc.uuid][acc.uuid] = selfContact;
+              
+              // 顺便解析并触发头像缓存读取
+              const url = selfContact.smallHeadImgUrl || selfContact.SmallHeadImgUrl || selfContact.headImgUrl || selfContact.HeadImgUrl || selfContact.avatar || '';
+              const rawUrl = typeof url === 'string' ? url.trim().replace(/`/g, '') : '';
+              if (rawUrl) {
+                // 如果是常规可下载的 HTTP 链接，获取 Blob 并返回本地 Blob URL
+                const isHttp = rawUrl.startsWith('http://') || rawUrl.startsWith('https://');
+                if (isHttp) {
+                  const blobUrl = await this.getAvatarUrl(rawUrl);
+                  if (blobUrl) {
+                    acc.avatar = blobUrl;
+                  }
+                } else {
+                  acc.avatar = rawUrl;
+                }
+              }
+            }
+          } catch (e) {
+            console.warn(`[AccountStore] 预加载账号 ${acc.uuid} 自身头像失败:`, e);
+          }
+        }
+      }
+    },
+
     async syncAccountsFromServer() {
       try {
         let data: any[] = [];
@@ -417,17 +467,32 @@ export const useAccountStore = defineStore('account', {
             const profileRes: any = await loginApi.getProfile(this.tokenKey);
             // 拦截器已剥离 Code/Data 外壳，profileRes 就是 Data 体
             const profileData = profileRes?.Data || profileRes;
-            const userInfo = profileData?.userInfo || profileData?.UserInfo || profileData;
+            const userInfo = (profileData?.userInfo || profileData?.UserInfo || profileData) as any;
+            const userInfoExt = (profileData?.userInfoExt || profileData?.UserInfoExt) as any;
             
             const realWxid = userInfo?.userName?.str || userInfo?.UserName?.str 
                            || userInfo?.userName || userInfo?.UserName;
             const realNick = userInfo?.nickName?.str || userInfo?.NickName?.str 
                            || userInfo?.nickName || userInfo?.NickName;
-            const realAvatar = userInfo?.smallHeadImgUrl || userInfo?.SmallHeadImgUrl 
-                             || userInfo?.headImgUrl || userInfo?.HeadImgUrl
-                             || userInfo?.bigHeadImgUrl || userInfo?.BigHeadImgUrl
-                             || userInfo?.avatar;
+            const realAvatar = (userInfoExt ? (
+                                 extractAvatarString(userInfoExt.smallHeadImgUrl) 
+                              || extractAvatarString(userInfoExt.SmallHeadImgUrl) 
+                              || extractAvatarString(userInfoExt.headImgUrl) 
+                              || extractAvatarString(userInfoExt.HeadImgUrl) 
+                              || extractAvatarString(userInfoExt.bigHeadImgUrl) 
+                              || extractAvatarString(userInfoExt.BigHeadImgUrl) 
+                              || extractAvatarString(userInfoExt.avatar)
+                               ) : '')
+                             || extractAvatarString(userInfo?.smallHeadImgUrl) 
+                             || extractAvatarString(userInfo?.SmallHeadImgUrl) 
+                             || extractAvatarString(userInfo?.headImgUrl) 
+                             || extractAvatarString(userInfo?.HeadImgUrl)
+                             || extractAvatarString(userInfo?.bigHeadImgUrl) 
+                             || extractAvatarString(userInfo?.BigHeadImgUrl)
+                             || extractAvatarString(userInfo?.avatar);
 
+            const realAlias = userInfo?.alias?.str || userInfo?.Alias?.str
+                            || userInfo?.alias || userInfo?.Alias;
             const resolvedUuid = realWxid || this.tokenKey;
             console.log(`[AccountStore] TOKEN_KEY 模式 GetProfile 解析: uuid=${resolvedUuid}`);
 
@@ -439,7 +504,8 @@ export const useAccountStore = defineStore('account', {
               sessionKey: this.tokenKey,
               nickname: realNick || '授权账号',
               avatar: resolvedAvatar || realAvatar || '',
-              status: 'offline'
+              status: 'offline',
+              alias: realAlias || ''
             }];
           } catch (e) {
             console.warn('[AccountStore] TOKEN_KEY GetProfile 失败，使用 tokenKey 占位:', e);
@@ -451,6 +517,9 @@ export const useAccountStore = defineStore('account', {
               status: 'offline'
             }];
           }
+
+          // 🚀 在此预加载所有离线/缓存账号的自身头像
+          await this.preloadOfflineAccountAvatars();
 
           // 设置活跃账号（此时 uuid 已是真实 wxid 或 tokenKey）
           const targetAcc = this.accounts[0];
@@ -489,12 +558,14 @@ export const useAccountStore = defineStore('account', {
             const rawAvatar = acc.avatar || '';
             // 直接用已缓存的 blob URL，如果本地无缓存就用原始 URL
             const resolvedAvatar = rawAvatar ? await this.getAvatarUrl(rawAvatar) || rawAvatar : '';
+            const aliasVal = acc.alias || acc.Alias || '';
             return {
               uuid: userName || key || '',
               sessionKey: key,
               nickname: acc.nick_name || acc.nickname || (userName ? '已登录' : '未登录槽位'),
               avatar: resolvedAvatar,
-              status: 'offline' // 初始先设为离线，由 checkSingleAccountStatus 修正
+              status: 'offline', // 初始先设为离线，由 checkSingleAccountStatus 修正
+              alias: aliasVal
             };
           }));
 
@@ -503,12 +574,23 @@ export const useAccountStore = defineStore('account', {
             if (firstOnline) this.activeAccountUuid = firstOnline.uuid;
           }
 
+          // 🚀 在此预加载所有离线/缓存账号的自身头像
+          await this.preloadOfflineAccountAvatars();
+
           // 异步修正 ID：getProfile → 拿到真实 wxid → 再注册 Socket
-          this.accounts.forEach(acc => {
-            if (acc.sessionKey) {
-              this.fetchProfileAndFixUuid(acc.sessionKey);
+          // 🚀 核心修复：改为串行执行，防止并发请求冲垮后端 API（尤其是 getProfile），导致其他账号数据补全失败
+          const initializeAccounts = async () => {
+            for (const acc of this.accounts) {
+              if (acc.sessionKey) {
+                // 等待每一个账号初始化完成，留给服务器处理时间
+                await this.fetchProfileAndFixUuid(acc.sessionKey);
+                await new Promise(resolve => setTimeout(resolve, 500)); // 增加 500ms 缓冲防限频
+              }
             }
-          });
+            // 🚀 所有账号初始化/槽位修正完毕后，二次触发离线/缓存头像的预加载
+            await this.preloadOfflineAccountAvatars();
+          };
+          initializeAccounts();
         }
       } catch (err) {
         console.error('获取账号列表失败:', err);
@@ -580,20 +662,45 @@ export const useAccountStore = defineStore('account', {
         }
 
         const res: any = await loginApi.getProfile(license);
-        console.log(`[AccountStore] GetProfile 响应 (${license.substring(0,8)}...):`, res);
+        console.log(`[AccountStore] GetProfile 原始响应:`, res);
         
         // 修正：拦截器已经剥离了 Data 层，res 可能就是数据本身，也可能还带着 Data (取决于 API 实现)
         const data = res?.Data || res;
         const userInfo = data?.userInfo || data?.UserInfo || data; 
+        const userInfoExt = data?.userInfoExt || data?.UserInfoExt;
+        
+        console.log(`[AccountStore] 提取到的 userInfo 节点:`, userInfo);
+        console.log(`[AccountStore] 提取到的 userInfoExt 节点:`, userInfoExt);
         
         if (!userInfo || (!userInfo.userName && !userInfo.UserName)) {
           console.warn(`[AccountStore] GetProfile 未能解析到 userInfo 结构`, res);
-          return;
+          return null;
         }
 
         const realWxid = userInfo.userName?.str || userInfo.UserName?.str || userInfo.userName || userInfo.UserName;
         const realNick = userInfo.nickName?.str || userInfo.NickName?.str || userInfo.nickName || userInfo.NickName;
-        const realAvatar = userInfo.smallHeadImgUrl || userInfo.SmallHeadImgUrl || userInfo.headImgUrl || userInfo.HeadImgUrl || userInfo.bigHeadImgUrl || userInfo.BigHeadImgUrl || userInfo.avatar;
+        
+        const rawSmallUrl = userInfoExt?.smallHeadImgUrl || userInfoExt?.SmallHeadImgUrl || userInfo?.smallHeadImgUrl || userInfo?.SmallHeadImgUrl;
+        console.log(`[AccountStore] smallHeadImgUrl 原始节点值:`, rawSmallUrl);
+        
+        const realAvatar = (userInfoExt ? (
+                             extractAvatarString(userInfoExt.smallHeadImgUrl) 
+                          || extractAvatarString(userInfoExt.SmallHeadImgUrl) 
+                          || extractAvatarString(userInfoExt.headImgUrl) 
+                          || extractAvatarString(userInfoExt.HeadImgUrl) 
+                          || extractAvatarString(userInfoExt.bigHeadImgUrl) 
+                          || extractAvatarString(userInfoExt.BigHeadImgUrl) 
+                          || extractAvatarString(userInfoExt.avatar)
+                           ) : '')
+                         || extractAvatarString(userInfo.smallHeadImgUrl) 
+                         || extractAvatarString(userInfo.SmallHeadImgUrl) 
+                         || extractAvatarString(userInfo.headImgUrl) 
+                         || extractAvatarString(userInfo.HeadImgUrl) 
+                         || extractAvatarString(userInfo.bigHeadImgUrl) 
+                         || extractAvatarString(userInfo.BigHeadImgUrl) 
+                         || extractAvatarString(userInfo.avatar);
+                         
+        console.log(`[AccountStore] 解析出 realAvatar 头像 URL:`, realAvatar);
 
         if (realWxid) {
           console.log(`[AccountStore] 身份比对: 当前ID vs 真实ID -> ${license.substring(0,10)}... vs ${realWxid}`);
@@ -603,29 +710,42 @@ export const useAccountStore = defineStore('account', {
           const accIndex = this.accounts.findIndex(a => a.sessionKey === license);
           if (accIndex > -1) {
             const oldUuid = this.accounts[accIndex].uuid;
-            if (oldUuid === realWxid) {
-              return;
+
+            // 只有当当前的 uuid 与真实的 realWxid 不一致时，才需要进行数据迁移和 Socket 重置
+            if (oldUuid && oldUuid !== realWxid) {
+              console.log(`[AccountStore] 触发 ID 修正与数据迁移: ${oldUuid} -> ${realWxid}`);
+              
+              // 1. 迁移内存镜像
+              if (this.accountContactMaps[oldUuid]) {
+                this.accountContactMaps[realWxid] = { 
+                  ...this.accountContactMaps[realWxid], 
+                  ...this.accountContactMaps[oldUuid] 
+                };
+                delete this.accountContactMaps[oldUuid];
+              }
+
+              // 2. 迁移聊天记录 Pinia
+              chatStore.migrateData(oldUuid, realWxid);
+              
+              // 3. 迁移 IndexedDB
+              await contactCache.migrateAccountData(oldUuid, realWxid);
+              
+              // 4. 更新 Store 中的账号信息
+              this.accounts[accIndex].uuid = realWxid;
+
+              // 5. 重启 Socket 关联
+              if (oldUuid) {
+                socketManager.stopAccount(oldUuid);
+              }
             }
 
-            console.log(`[AccountStore] 触发 ID 修正: ${oldUuid} -> ${realWxid}`);
-            
-            // 1. 迁移内存镜像
-            if (this.accountContactMaps[oldUuid]) {
-              this.accountContactMaps[realWxid] = { 
-                ...this.accountContactMaps[realWxid], 
-                ...this.accountContactMaps[oldUuid] 
-              };
-              delete this.accountContactMaps[oldUuid];
+            // 无论是否需要迁移，都更新并同步最新的个人资料与头像缓存
+            const realAlias = userInfo.alias?.str || userInfo.Alias?.str || userInfo.alias || userInfo.Alias;
+            this.accounts[accIndex].alias = realAlias || '';
+            if (realNick) {
+              this.accounts[accIndex].nickname = realNick;
             }
 
-            // 2. 迁移聊天记录 Pinia
-            chatStore.migrateData(oldUuid, realWxid);
-            
-            // 3. 迁移 IndexedDB
-            await contactCache.migrateAccountData(oldUuid, realWxid);
-            
-            // 4. 更新 Store 中的账号信息
-            this.accounts[accIndex].uuid = realWxid;
             // 直接用本地缓存的 blob URL，避免防盗链导致原始 URL 无法渲染
             const rawAvatar = realAvatar || this.accounts[accIndex].avatar;
             if (rawAvatar) {
@@ -646,11 +766,6 @@ export const useAccountStore = defineStore('account', {
               this.activeAccountUuid = realWxid;
             }
 
-            // 5. 重启 Socket 关联
-            if (oldUuid) {
-              socketManager.stopAccount(oldUuid);
-            }
-
             if (isOnline) {
               // 这里 registerAccount 内部会自己处理 wxid 查找，但我们已经知道 realWxid 了
               socketManager.registerAccount(realWxid, license);
@@ -664,14 +779,14 @@ export const useAccountStore = defineStore('account', {
                 // 7. 触发新 ID 的全量同步判断
                 this.syncFullContactList(realWxid, license);
               }
-            } else {
-              console.log(`[AccountStore] 账号 ${realWxid} 离线，跳过数据同步`);
             }
+            return { realWxid, realNick, realAvatar };
           }
         }
       } catch (e) {
         console.warn('[AccountStore] 资料补全失败:', e);
       }
+      return null;
     },
 
     async loadContactsFromCache(accountUuid?: string) {
@@ -712,7 +827,8 @@ export const useAccountStore = defineStore('account', {
       this.accountContactMaps[targetUuid][wxid] = { 
         ...this.accountContactMaps[targetUuid][wxid], 
         ...detail,
-        isPlaceholder: false // 清除占位标记
+        isPlaceholder: false, // 清除占位标记
+        lastUpdated: Date.now() // 🚀 记录更新时间戳，用于缓存过期控制
       };
 
       // 🚀 Redis 极速模式下，自动触发防抖全量回写到 Redis，持久化取代 IndexedDB (安全去重，防止单个写覆盖)
@@ -742,11 +858,6 @@ export const useAccountStore = defineStore('account', {
             });
           }
         }
-      }
-      
-      // Redis 极速模式下跳过 IndexedDB 写入，仅更新内存镜像
-      if (!this.isRedisMode(targetUuid)) {
-        await contactCache.set(wxid, detail, targetUuid);
       }
 
       // 反向同步：更新会话列表中的昵称和头像
@@ -778,6 +889,129 @@ export const useAccountStore = defineStore('account', {
             contactCache.saveConversation(targetUuid, JSON.parse(JSON.stringify(conv)));
           }
         }
+      }
+    },
+
+    async checkFriendRelation(username: string) {
+      if (!username) return;
+      const targetUuid = this.activeAccountUuid;
+      if (!targetUuid) return;
+      const activeAcc = this.accounts.find(a => a.uuid === targetUuid);
+      const key = activeAcc?.sessionKey || this.tokenKey;
+      if (!key) {
+        throw new Error('当前账号未登录或缺少密钥');
+      }
+
+      try {
+        const res: any = await messageApi.getFriendRelation(key, username);
+        console.log(`[AccountStore] checkFriendRelation 结果:`, res);
+        
+        const relation = res?.FriendRelation !== undefined ? res.FriendRelation : -1;
+        const sign = res?.Sign || '';
+        const openid = res?.Openid || '';
+        
+        // 将关系信息合入联系人详情中并持久化
+        await this.updateContact(username, {
+          friendRelation: relation,
+          relationSign: sign,
+          relationOpenid: openid,
+          relationCheckedAt: Date.now()
+        }, targetUuid, false);
+
+        return res;
+      } catch (err: any) {
+        console.error('[AccountStore] 获取好友关系失败:', err);
+        throw err;
+      }
+    },
+
+    async forceUpdateContactDetails(username: string) {
+      if (!username) return;
+      const targetUuid = this.activeAccountUuid;
+      if (!targetUuid) return;
+      const activeAcc = this.accounts.find(a => a.uuid === targetUuid);
+      const key = activeAcc?.sessionKey || this.tokenKey;
+      if (!key) {
+        throw new Error('当前账号未登录或缺少密钥');
+      }
+
+      try {
+        const res: any = await messageApi.getContactDetailsList(key, [username]);
+        console.log(`[AccountStore] forceUpdateContactDetails 结果:`, res);
+        
+        let detailList: any[] = [];
+        if (Array.isArray(res)) detailList = res;
+        else if (res?.Data && Array.isArray(res.Data)) detailList = res.Data;
+        else if (res?.Data?.ContactList && Array.isArray(res.Data.ContactList)) detailList = res.Data.ContactList;
+        else if (res?.Data?.contactList && Array.isArray(res.Data.contactList)) detailList = res.Data.contactList;
+        else if (res?.Data?.List && Array.isArray(res.Data.List)) detailList = res.Data.List;
+        else if (res?.ContactList && Array.isArray(res.ContactList)) detailList = res.ContactList;
+        else if (res?.contactList && Array.isArray(res.contactList)) detailList = res.contactList;
+        
+        const detail = detailList.find(d => {
+          const wxid = d.userName?.str || d.UserName?.str || d.wxid || d.userName || d.UserName;
+          return wxid === username;
+        });
+
+        if (detail) {
+          // 强制更新详情到内存和数据库中
+          await this.updateContact(username, detail, targetUuid, false);
+          
+          // 如果有头像且是常规 HTTP 链接，也尝试拉取最新的头像本地缓存
+          const url = detail.smallHeadImgUrl || detail.SmallHeadImgUrl || detail.headImgUrl || detail.HeadImgUrl || detail.avatar || '';
+          const rawUrl = typeof url === 'string' ? url.trim().replace(/`/g, '') : '';
+          const isHttpUrl = rawUrl.startsWith('http://') || rawUrl.startsWith('https://');
+          if (rawUrl && isHttpUrl) {
+            await this.getAvatarUrl(rawUrl);
+          }
+          
+          return detail;
+        } else {
+          throw new Error('接口未返回有效的联系人详情');
+        }
+      } catch (err: any) {
+        console.error('[AccountStore] 强制更新资料失败:', err);
+        throw err;
+      }
+    },
+
+    async deleteContact(username: string) {
+      if (!username) return;
+      const targetUuid = this.activeAccountUuid;
+      if (!targetUuid) return;
+      const activeAcc = this.accounts.find(a => a.uuid === targetUuid);
+      const key = activeAcc?.sessionKey || this.tokenKey;
+      if (!key) {
+        throw new Error('当前账号未登录或缺少密钥');
+      }
+
+      try {
+        const res: any = await messageApi.delContact(key, username);
+        console.log(`[AccountStore] deleteContact 结果:`, res);
+
+        // 1. 从内存中删除联系人
+        if (this.accountContactMaps[targetUuid]) {
+          delete this.accountContactMaps[targetUuid][username];
+        }
+
+        // 2. 从 IndexedDB 数据库中删除联系人
+        if (!this.isRedisMode(targetUuid)) {
+          await contactCache.deleteContact(username, targetUuid);
+        } else {
+          this.triggerDebouncedRedisWriteback(targetUuid);
+        }
+
+        // 3. 从聊天列表和会话 DB 中也清理该联系人
+        const chatStore = useChatStore();
+        if (chatStore.accountConversations[targetUuid]) {
+          chatStore.accountConversations[targetUuid] = chatStore.accountConversations[targetUuid].filter(c => c.wxid !== username);
+          await contactCache.deleteConversation(username, targetUuid);
+        }
+
+        return res;
+      } catch (err: any) {
+        console.error('[AccountStore] 删除好友失败:', err);
+        throw err;
       }
     },
 
@@ -918,21 +1152,41 @@ export const useAccountStore = defineStore('account', {
       const targetUuid = accountUuid || this.activeAccountUuid;
       if (!targetUuid) return;
 
-        if (this.detailsQueue.length > 0) this.processDetailsQueue();
+      const ids = Array.isArray(wxids) ? wxids : [wxids];
+      const map = this.accountContactMaps[targetUuid] || {};
+      
+      // 先为完全不存在的联系人写入占位符，确保他们立即出现在通讯录中
+      ids.forEach(id => {
+        if (id !== targetUuid && id !== 'filehelper' && !map[id]) {
+          if (!this.accountContactMaps[targetUuid]) {
+            this.accountContactMaps[targetUuid] = {};
+          }
+          this.accountContactMaps[targetUuid][id] = { wxid: id, isPlaceholder: true };
+          
+          // 如果非 Redis 模式，则写入 IndexedDB
+          if (!this.isRedisMode(targetUuid)) {
+            contactCache.set(id, this.accountContactMaps[targetUuid][id], targetUuid);
+          } else {
+            // Redis 模式触发防抖回写
+            this.triggerDebouncedRedisWriteback(targetUuid);
+          }
+        }
+      });
+
+      if (this.detailsQueue.length > 0) this.processDetailsQueue();
       if (this.isRedisMode(targetUuid)) {
         if (isDebug('socket')) {
           console.log(`[AccountStore:Redis] 处于 Redis 极速模式，跳过对联系人 ${JSON.stringify(wxids)} 的真实 HTTP 详情请求`);
         }
         return;
       }
-
-      const ids = Array.isArray(wxids) ? wxids : [wxids];
-      const map = this.accountContactMaps[targetUuid] || {};
       
       // 过滤掉自己、文件传输助手，以及已经有完整数据的联系人
       const needsFetch = ids.filter(id => {
         if (id === targetUuid || id === 'filehelper') return false;
-        return !map[id] || map[id].isPlaceholder;
+        
+        const contact = map[id] || this.accountContactMaps[targetUuid]?.[id];
+        return !contact || contact.isPlaceholder;
       });
       
       needsFetch.forEach(id => {
@@ -991,6 +1245,14 @@ export const useAccountStore = defineStore('account', {
 
     async getAvatarUrl(url: string) {
       if (!url) return '';
+      // 🚀 核心防御：如果不是常规的 HTTP 链接（比如微信原生的 srt2ihe: 协议），直接返回原字符串，防止网络 fetch 抛错
+      const isHttp = url.startsWith('http://') || url.startsWith('https://');
+      if (!isHttp) return url;
+
+      // 统一将 http 协议强转为 https，防止部署在 HTTPS 环境下时由于 Mixed Content (混合内容) 被浏览器直接拦截
+      if (url.startsWith('http://')) {
+        url = url.replace('http://', 'https://');
+      }
       if (this.avatarBlobMap[url]) return this.avatarBlobMap[url];
       const config = this.getEffectiveAvatarConfig();
       if (config.cacheEnabled) {
@@ -1064,6 +1326,39 @@ export const useAccountStore = defineStore('account', {
         console.error(`[AccountStore:Redis] 批量回写失败:`, err);
         throw err;
       }
+    },
+
+    getContactAvatar(c: any): string {
+      if (!c) return '';
+      const urlVal = c.smallHeadImgUrl || c.SmallHeadImgUrl || c.headImgUrl || c.HeadImgUrl || c.avatar || '';
+      let rawUrl = extractAvatarString(urlVal).trim().replace(/`/g, '');
+      if (!rawUrl) return '';
+      if (rawUrl.startsWith('http://')) {
+        rawUrl = rawUrl.replace('http://', 'https://');
+      }
+      this.getAvatarUrl(rawUrl);
+      return this.avatarBlobMap[rawUrl] || rawUrl;
+    },
+
+    getAccountAvatar(acc: any): string {
+      if (!acc) return '';
+      const selfContact = this.accountContactMaps[acc.uuid]?.[acc.uuid];
+      if (selfContact) {
+        const cached = this.getContactAvatar(selfContact);
+        if (cached) return cached;
+      }
+      let avatarUrl = acc.avatar;
+      if (avatarUrl) {
+        let rawUrl = extractAvatarString(avatarUrl).trim().replace(/`/g, '');
+        if (rawUrl) {
+          if (rawUrl.startsWith('http://')) {
+            rawUrl = rawUrl.replace('http://', 'https://');
+          }
+          this.getAvatarUrl(rawUrl);
+          return this.avatarBlobMap[rawUrl] || rawUrl;
+        }
+      }
+      return '';
     }
   }
 });

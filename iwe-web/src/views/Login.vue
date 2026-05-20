@@ -81,8 +81,30 @@
       <a-tab-pane key="device" title="62账号登录">
         <div class="a16-login-box">
           <a-form :model="deviceForm" layout="vertical" @submit="handleDeviceLogin">
-            <a-form-item field="UserName" label="微信账号" required>
-              <a-input v-model="deviceForm.UserName" placeholder="手机号/微信号/QQ" />
+            <a-form-item field="Account" required>
+              <template #label>
+                <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+                  <span>微信账号</span>
+                  <a-dropdown v-if="localUsernamesWith62.length > 0" @select="handleSelectUsername" position="br">
+                    <a-link size="mini" style="padding: 0; display: flex; align-items: center; gap: 4px;">
+                      <icon-history /> 历史账号 <icon-down />
+                    </a-link>
+                    <template #content>
+                      <a-doption 
+                        v-for="item in localUsernamesWith62" 
+                        :key="item.value" 
+                        :value="item.value"
+                      >
+                        <div style="display: flex; flex-direction: column; line-height: 1.4; padding: 2px 0;">
+                          <span style="font-weight: 500; font-size: 13px;">{{ item.nickname }}</span>
+                          <span style="font-size: 11px; opacity: 0.7;">{{ item.value }}</span>
+                        </div>
+                      </a-doption>
+                    </template>
+                  </a-dropdown>
+                </div>
+              </template>
+              <a-input v-model="deviceForm.Account" placeholder="手机号/微信号/QQ" />
             </a-form-item>
             <a-form-item field="Password" label="密码" required>
               <a-input-password v-model="deviceForm.Password" placeholder="请输入密码" />
@@ -197,7 +219,9 @@ import {
   IconThunderbolt,
   IconQrcode,
   IconSafe,
-  IconCopy
+  IconCopy,
+  IconHistory,
+  IconDown
 } from '@arco-design/web-vue/es/icon';
 
 const props = defineProps({
@@ -224,16 +248,6 @@ watch(qrType, (newType) => {
   fetchQrCode(newType);
 });
 
-// --- A16 登录相关 (已注释) ---
-/*
-const a16Loading = ref(false);
-const a16Form = reactive({
-  A16Data: '',
-  DeviceName: 'IWE-Desktop',
-  Key: props.assignedKey // 使用分配的 Key
-});
-*/
-
 // --- 62 账号登录相关 ---
 const deviceLoading = ref(false);
 const deviceForm = reactive({
@@ -254,14 +268,14 @@ const extractForm = reactive({
 
 const hasLocal62Data = computed(() => {
   return !!(
-    (deviceForm.UserName && localStorage.getItem(`wx_62_data_${deviceForm.UserName}`)) ||
+    (deviceForm.Account && localStorage.getItem(`wx_62_data_${deviceForm.Account}`)) ||
     (props.assignedKey && localStorage.getItem(`wx_62_data_${props.assignedKey}`)) ||
     localStorage.getItem('wx_62_data')
   );
 });
 
 const fillLocal62Data = () => {
-  const saved = (deviceForm.UserName && localStorage.getItem(`wx_62_data_${deviceForm.UserName}`)) || 
+  const saved = (deviceForm.Account && localStorage.getItem(`wx_62_data_${deviceForm.Account}`)) || 
                 (props.assignedKey && localStorage.getItem(`wx_62_data_${props.assignedKey}`));
   if (saved) {
     deviceForm.LoginData = saved;
@@ -277,19 +291,179 @@ const fillLocal62Data = () => {
   }
 };
 
+// 声明 62 账号绑定关系接口
+interface Wx62Binding {
+  username: string;     // 微信账号 (优先为 alias, 其次为 uuid / 输入账号)
+  tokenKey: string;     // TOKEN_KEY (sessionKey)
+  loginData: string;    // 62 数据
+  nickname: string;     // 昵称
+  updatedAt: number;
+}
+
+// 获取所有的 62 绑定关系，若没有则从旧数据迁移/初始化
+const getWx62Bindings = (): Wx62Binding[] => {
+  let bindings: Wx62Binding[] = [];
+  try {
+    const saved = localStorage.getItem('wx_62_bindings');
+    if (saved) {
+      bindings = JSON.parse(saved);
+    }
+  } catch (e) {
+    console.error('解析 wx_62_bindings 失败:', e);
+  }
+
+  // 1. 自动从 store 里的在线账号与本地 62 数据匹配，智能丰富/纠正绑定关系
+  accountStore.accounts.forEach(acc => {
+    if (!acc.uuid || !acc.sessionKey) return;
+    
+    // 优先从 acc.alias、acc.uuid、acc.sessionKey 中拿数据
+    const data = (acc.alias && localStorage.getItem(`wx_62_data_${acc.alias}`)) ||
+                 localStorage.getItem(`wx_62_data_${acc.uuid}`) || 
+                 localStorage.getItem(`wx_62_data_${acc.sessionKey}`);
+    
+    if (data) {
+      // 微信账号优先使用 alias，其次用 uuid
+      const resolvedUsername = acc.alias || acc.uuid;
+      const existingIdx = bindings.findIndex(b => b.username === resolvedUsername || (acc.alias && b.username === acc.alias));
+      if (existingIdx > -1) {
+        // 如果已存在，更新关联的 tokenKey 和 62data 绑定关系
+        bindings[existingIdx].username = resolvedUsername;
+        bindings[existingIdx].tokenKey = acc.sessionKey;
+        bindings[existingIdx].loginData = data;
+        bindings[existingIdx].nickname = acc.nickname || bindings[existingIdx].nickname;
+        bindings[existingIdx].updatedAt = Date.now();
+      } else {
+        bindings.push({
+          username: resolvedUsername,
+          tokenKey: acc.sessionKey,
+          loginData: data,
+          nickname: acc.nickname || '微信账号',
+          updatedAt: Date.now()
+        });
+      }
+    }
+  });
+
+  // 2. 从本地缓存的 wx_62_data_${key} 进行向下兼容补全
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key && key.startsWith('wx_62_data_')) {
+      const val = key.substring('wx_62_data_'.length);
+      // 排除备份兜底键和已有绑定
+      if (val && val !== 'wx_62_data' && !bindings.some(b => b.username === val || b.tokenKey === val)) {
+        const matchedAcc = accountStore.accounts.find(a => a.uuid === val || a.sessionKey === val || a.alias === val);
+        const data = localStorage.getItem(key);
+        if (data) {
+          bindings.push({
+            username: matchedAcc?.alias || matchedAcc?.uuid || val,
+            tokenKey: matchedAcc?.sessionKey || val,
+            loginData: data,
+            nickname: matchedAcc?.nickname || '本地62账号',
+            updatedAt: Date.now()
+          });
+        }
+      }
+    }
+  }
+
+  return bindings;
+};
+
+// 保存或更新单个绑定关系
+const saveWx62Binding = (username: string, tokenKey: string, loginData: string, nickname = '') => {
+  if (!username || !tokenKey || !loginData) return;
+  const bindings = getWx62Bindings();
+  
+  // 查找对应账号，看看在 store 中有没有更完整的 alias 映射
+  const matchedAcc = accountStore.accounts.find(a => a.uuid === username || a.sessionKey === tokenKey || a.alias === username);
+  const resolvedUsername = matchedAcc?.alias || username;
+  
+  const idx = bindings.findIndex(b => b.username === resolvedUsername || (matchedAcc?.alias && b.username === matchedAcc.alias));
+  const resolvedNickname = nickname || matchedAcc?.nickname || '本地62账号';
+
+  if (idx > -1) {
+    bindings[idx].username = resolvedUsername;
+    bindings[idx].tokenKey = tokenKey;
+    bindings[idx].loginData = loginData;
+    bindings[idx].nickname = resolvedNickname;
+    bindings[idx].updatedAt = Date.now();
+  } else {
+    bindings.push({
+      username: resolvedUsername,
+      tokenKey: tokenKey,
+      loginData: loginData,
+      nickname: resolvedNickname,
+      updatedAt: Date.now()
+    });
+  }
+  
+  localStorage.setItem('wx_62_bindings', JSON.stringify(bindings));
+};
+
+// 计算所有拥有本地 62 数据的账号列表，供选择使用
+const localUsernamesWith62 = computed(() => {
+  const bindings = getWx62Bindings();
+  return bindings.map(b => ({
+    label: `${b.nickname} (${b.username})`,
+    value: b.username,
+    nickname: b.nickname,
+    tokenKey: b.tokenKey,
+    loginData: b.loginData
+  }));
+});
+
+const handleSelectUsername = (value: string) => {
+  const matched = localUsernamesWith62.value.find(item => item.value === value);
+  if (matched) {
+    deviceForm.Account = matched.value;      // 填充微信账号 (优先是 alias)
+    deviceForm.LoginData = matched.loginData; // 填充 62 数据
+    
+    // 正确回填与之绑定的 TOKEN_KEY 到槽位配置中
+    authKey.value = matched.tokenKey;
+    deviceForm.Key = matched.tokenKey;
+    
+    Message.success(`已选择账号 [${matched.nickname}]，已自动填充微信账号、TOKEN_KEY 及 62 数据`);
+  } else {
+    Message.warning(`未找到对应账号的绑定数据`);
+  }
+};
+
 // 自动填充观察器，支持当输入 UserName 或 key 时自动拉取该账户专用 62 数据
 watch(
-  [() => deviceForm.UserName, () => props.assignedKey],
-  ([newUsername, newKey]) => {
-    if (!deviceForm.LoginData) {
-      const saved = (newUsername && localStorage.getItem(`wx_62_data_${newUsername}`)) || 
-                    (newKey && localStorage.getItem(`wx_62_data_${newKey}`));
-      if (saved) {
-        deviceForm.LoginData = saved;
+  [() => deviceForm.Account, () => props.assignedKey],
+  ([newUsername, newKey], [oldUsername, oldKey]) => {
+    // 优先从已有的绑定关系中检索 62 数据
+    const bindings = getWx62Bindings();
+    const matchedBinding = bindings.find(b => b.username === newUsername || b.tokenKey === newKey || (newUsername && b.username.toLowerCase() === newUsername.toLowerCase()));
+    
+    const savedNew = matchedBinding?.loginData || 
+                     (newUsername && localStorage.getItem(`wx_62_data_${newUsername}`)) || 
+                     (newKey && localStorage.getItem(`wx_62_data_${newKey}`));
+    
+    if (savedNew) {
+      const general = localStorage.getItem('wx_62_data');
+      const oldBinding = bindings.find(b => b.username === oldUsername || b.tokenKey === oldKey);
+      const savedOld = oldBinding?.loginData ||
+                       (oldUsername && localStorage.getItem(`wx_62_data_${oldUsername}`)) || 
+                       (oldKey && localStorage.getItem(`wx_62_data_${oldKey}`));
+      
+      const isCurrentEmpty = !deviceForm.LoginData;
+      const isCurrentGeneral = general && deviceForm.LoginData === general;
+      const isCurrentOldData = savedOld && deviceForm.LoginData === savedOld;
+      
+      // 如果当前为空，或者当前是通用数据，或者当前是上一个账号的数据，则自动覆写为新账号的数据
+      if (isCurrentEmpty || isCurrentGeneral || isCurrentOldData) {
+        deviceForm.LoginData = savedNew;
+        // 如果有对应绑定的 tokenKey 且当前配置非空，顺便更新 tokenKey 确保一致
+        if (matchedBinding) {
+          authKey.value = matchedBinding.tokenKey;
+          deviceForm.Key = matchedBinding.tokenKey;
+        }
       }
     }
   },
-  { immediate: true }
+  { immediate: true
+  }
 );
 
 const handleExtract62 = async () => {
@@ -326,6 +500,11 @@ const handleExtract62 = async () => {
       const matchedAcc = accountStore.accounts.find(a => a.sessionKey === extractForm.License);
       if (matchedAcc && matchedAcc.uuid) {
         localStorage.setItem(`wx_62_data_${matchedAcc.uuid}`, dataVal);
+        if (matchedAcc.alias) {
+          localStorage.setItem(`wx_62_data_${matchedAcc.alias}`, dataVal);
+        }
+        // 保存绑定关系！优先使用 alias
+        saveWx62Binding(matchedAcc.alias || matchedAcc.uuid, matchedAcc.sessionKey, dataVal, matchedAcc.nickname);
       }
       
       Message.success('62数据提取成功，已按账号隔离保存至本地');
@@ -539,7 +718,7 @@ const handleA16Login = async () => {
 */
 
 const handleDeviceLogin = async () => {
-  if (!deviceForm.UserName || !deviceForm.Password) return Message.warning('请输入账号和密码');
+  if (!deviceForm.Account || !deviceForm.Password) return Message.warning('请输入账号和密码');
   deviceLoading.value = true;
   try {
     const payload = {
@@ -554,15 +733,32 @@ const handleDeviceLogin = async () => {
       Proxy: "",
       Ticket: "",
       Type: 0,
-      UserName: deviceForm.UserName
+      UserName: deviceForm.Account
     };
     const res: any = await loginApi.deviceLogin(authKey.value || deviceForm.Key, payload);
     if (res && res.Key) {
       Message.success('62 账号登录成功');
+      
+      const realAlias = res.Alias || res.alias;
+      const realUsername = realAlias || res.Uuid || deviceForm.Account;
+      
+      // 成功登录后，将本次使用的 62 数据按账号隔离保存，并建立唯一绑定关系
+      if (deviceForm.LoginData) {
+        localStorage.setItem(`wx_62_data_${deviceForm.Account}`, deviceForm.LoginData);
+        if (res.Uuid) {
+          localStorage.setItem(`wx_62_data_${res.Uuid}`, deviceForm.LoginData);
+        }
+        if (realAlias) {
+          localStorage.setItem(`wx_62_data_${realAlias}`, deviceForm.LoginData);
+        }
+        // 绑定微信账号 (优先用 alias)、TOKEN_KEY (res.Key) 和 62 数据
+        saveWx62Binding(realUsername, res.Key, deviceForm.LoginData, res.Nickname || deviceForm.Account);
+      }
+
       emit('success', {
         uuid: res.Uuid || 'device-' + Date.now(),
         sessionKey: res.Key,
-        nickname: res.Nickname || deviceForm.UserName
+        nickname: res.Nickname || deviceForm.Account
       });
     } else {
       Message.error(res?.Msg || '登录失败');
@@ -578,6 +774,10 @@ const stopPolling = () => { if (timer) clearInterval(timer); timer = null; };
 onMounted(() => {
   fetchConnectStatus();
   // 不再自动获取二维码
+  
+  // 自动初始化并保存一次绑定关系，补充可能新上线的账号
+  const currentBindings = getWx62Bindings();
+  localStorage.setItem('wx_62_bindings', JSON.stringify(currentBindings));
   
   // 自动填充本地保存的62数据
   const saved62 = localStorage.getItem('wx_62_data');

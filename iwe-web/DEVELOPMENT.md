@@ -175,3 +175,126 @@
    - **重塑语法树**：彻底扫清因 IDE 合并冲突产生的语法废品：修复了 `syncViaRedis` 的断流声明；恢复了被错误夹塞的 `fetchProfileAndFixUuid` 闭合边界；重建了被覆盖的 `loadContactsFromCache` 函数；修正了 `processDetailsQueue` 补全队列被误塞为头像下载方法而失效的致命问题。
    - **参数定位纠偏**：修正了 `contactCache.set(...)` 调用参数位置颠倒的缺陷。
    - **解锁 API 接口**：完善了解锁 `im.ts` 历史增量消息同步 API (`syncHistoryMsg`) 及其在 `socketManager.ts` 中的整合调用。
+
+### 2026-05-19 62账号登录历史选择与数据自动填充优化
+1. **历史账号快捷下拉选择 (History Selection Dropdown)**：
+   - 在 62 账号登录表单的 `微信账号` 输入框中，内置了“历史账号”快捷下拉选择器（使用 Arco Design 的 `a-dropdown` 结合 `IconHistory` / `IconDown`）。
+   - 该选择器自动汇总本地 store 中已在线的账号以及在 `localStorage` 中扫描到的带有专用 62 数据的账户，格式化展示昵称与账号标识。
+   - 用户可直接一键点选，系统会同时将对应的微信账号及关联隔离的 62 数据一并回填到表单中，极大地改善了重复登录时的手感。
+2. **智能状态覆写与防抖 Watch 填充 (Smart Auto-fill Watcher)**：
+   - 对 62 账号表单的回填逻辑进行重构。支持当用户在账号输入框中直接键入或修改账号时，Watcher 会智能分析当前 62 数据输入框的值。
+   - 规则：如果 62 数据输入框为空、或者当前内容为通用备份 `wx_62_data` 数据、或匹配了上一次修改前账号的专属 62 数据，则自动将其覆写填充为当前新账号的专属数据；如果用户手动改写了该数据（与系统预设均不匹配），则维持用户的自定义更改，避免强行覆盖手动输入内容。
+3. **登录成功自动隔离归档 (Successful Login Auto-Archive)**：
+   - 在 `deviceLogin` 登录成功回调中，自动提取本次登录的账号、生成的 `Uuid`，并将本次填写的 62 数据以极其严格的隔离格式（`wx_62_data_${username}` 及 `wx_62_data_${uuid}`）归档回本地浏览器缓存。
+   - 该机制使得即便用户首次登录时为手动复制粘贴，一旦成功，后续登录即可彻底进入“零复制”全自动填充通道。
+
+4. **微信账号优先填入 Alias 自定义微信号 (`alias` 字段优先)**：
+   - 重构了绑定关系实体 `Wx62Binding` 与本地关联缓存 `wx_62_bindings` 的存储与提取规范。
+   - 增加对 Pinia 账号 Store 的 `alias` (WeChat Alias / 微信个性签名/微信号) 字段解析与存储支持。
+   - 在所有的绑定和自动回填数据流中，均将 `alias` 字段的优先级提升至 `uuid` (内部 wxid) 之外。这确保了一键回填至 `微信账号` 输入框的数据是直观的自定义微信号（即 API 接受的有效登录用户名），而非难记的系统内部 `wxid_xxxxxx`。
+5. **插槽安全规避 Slot 调用警告**：
+   - 针对 Vue 3 内部插槽在 lazy/custom 渲染时可能弹出的 `Slot "default" invoked outside of the render function` 编译警告，移除了 `<a-input>` 内部 `#suffix` 插槽嵌套下拉菜单的结构。
+   - 将下拉选择菜单移动至 `<a-form-item>` 的 `#label` 插槽中，采用 `flex` 两端对齐布局，彻底解决 Vue 3 依赖收集和插槽生命周期警告，保证控制台干净清爽。
+
+### 2026-05-19 核心工作台 Home.vue 合理化重构与组件拆分
+1. **重构提取聊天主视窗组件 (ChatArea.vue)**:
+   - 新建了 `src/components/ChatArea.vue` 独立业务组件，将原本挤压在 `Home.vue` 里的右侧聊天视窗完全剥离。
+   - 实现了自包含的输入框文本状态管理 (`inputText`)、对话框元素流向自动底部定位 (`msgFlow` + `scrollToBottom`) 以及时间戳格式化逻辑。
+   - 隔离了所有聊天气泡相关的样式（包括普通消息、图片消息、撤回提示等）和移动端适配媒体查询规则，使得样式结构更清晰且不会对全局产生副作用。
+2. **极大清空工作台 Home.vue 的代码冗余**:
+   - 移除了 `Home.vue` 内部定义的无用滚动监听、文本引用和冗余 watch 逻辑。
+   - 重新设计了 `handleSendMessage` 的事件触发流，改为由子组件 emit 并接受 message 文字参数发送，完全切断了父子状态多级耦合带来的隐患。
+   - 经过重构，`Home.vue` 已经成功瘦身并提升了整体可读性，并且打包编译成功 (`npx vite build` 零报错完成)。
+
+### 2026-05-19 全局与个人设置弹窗 SettingsModal.vue 独立化重构
+1. **重构提取设置控制台组件 (SettingsModal.vue)**:
+   - 新建了 `src/components/SettingsModal.vue` 组件，将原工作台下庞大的 `adminVisible` 设置和系统管理模版（约 320 行）以及 200+ 行相关逻辑脚本彻底剥离。
+   - 包含的模块有：服务器与管理密钥的保存与页面重载、全局授权码增删改查及回调地址绑定管理、 IndexedDB 本地分表占用计算与数据清理、系统调试开关选项、全局默认头像与 Redis Lan Mode 开关、当前活跃账号的头像缓存切换、极速 Redis 通道及一键批量好友联系人 Redis 回写等高阶维护功能。
+   - 在“系统管理”表单中特别修复并补充了“保存配置并刷新页面”的触发按钮，提供了流畅直白的管理员交互体验。
+2. **进一步轻量化核心主页面 Home.vue**:
+   - 移除了 `Home.vue` 内部多达十余个与管理相关的响应式变量（如 `adminAuthKey`、`cacheStats`、`contactLoading` 等）及全部的管理同步清理相关 JS 处理函数，主页面体积再次大幅缩减。
+   - 通过 `v-model:visible` 绑定实现了优雅的双向状态同步，主文件更加专注于三栏结构逻辑。
+   - 打包构建成功，零报错，无打包体积或依赖冲突副作用。
+
+### 2026-05-19 账号栏与功能导航侧边栏 LeftSidebar.vue 独立化重构
+1. **重构提取侧边栏组件 (LeftSidebar.vue)**:
+   - 新建了 `src/components/LeftSidebar.vue` 组件，将主工作台最左侧的“账号多账号管理栏”与“功能导航栏”彻底抽离成自包含的导航组件。
+   - 包含的模块有：多账号在线/离线灰度检测头像、扫码增添微信账号与手动授权登录、系统控制台与账号设置模态框唤醒按钮，以及当前活跃账号手动状态重检的 neon 特效呼吸环。
+   - 在子组件中优雅地封装了头像检索匹配逻辑 (`getAccountAvatar` / `getContactAvatar`)，对外暴露了 `v-model:active-tab` 的极简数据绑定。
+2. **极大轻量化 Home.vue 主文件**:
+   - 移除了 `Home.vue` 顶部原有的账号侧边栏和导航侧边栏（近 130 行 HTML 模版），并用极简的组件声明替换：
+     ```html
+     <!-- 第一栏与第二栏：侧边栏与功能导航 -->
+     <LeftSidebar
+       v-model:active-tab="activeTab"
+       :pending-account-uuid="pendingAccountUuid"
+       @switch-contact="handleSwitchContact"
+       @switch-account="handleSwitchAccount"
+       @add-account="handleAddAccount"
+       @manual-login="handleManualLogin"
+       @open-global-settings="handleOpenGlobalSettings"
+       @open-personal-settings="handleOpenPersonalSettings"
+       @active-account-manual-check="handleActiveAccountManualCheck"
+     />
+     ```
+   - 编译打包测试完美通过 (`Exit Code: 0`)。
+
+### 2026-05-19 会话与联系人列表栏 ListSidebar.vue 独立化重构
+1. **重构提取列表展示组件 (ListSidebar.vue)**:
+   - 新建了 `src/components/ListSidebar.vue` 组件，将主工作台第三栏（消息会话与联系人好友/群组/公众号列表，约 120 行模版）彻底抽离。
+   - 包含的模块有：消息会话搜索过滤、联系人按首字母拼音排序、增量分批渲染机制、以及基于 `IntersectionObserver` 和自定义指令 `v-lazy-contact` 的高级视口感知头像懒加载。
+   - 子组件内封装了复杂的分表排序及搜索过滤计算逻辑，大大降低了主页面的计算开销。
+2. **极轻量化 Home.vue 主文件**:
+   - 移除了 `Home.vue` 内部多达 15 个相关的局部变量（如 `contactCategory`、`visibleFriendLimit`、`slicedFriends` 等）和懒加载指令注册，以及相关的复杂监听器。
+   - 精简了第三栏 HTML 模版为一行组件声明：
+     ```html
+     <!-- 第三栏：列表展示 -->
+     <ListSidebar
+       :active-tab="activeTab"
+       :active-id="chatStore.activeId"
+       @select-chat="handleSelectChat"
+       @select-contact="handleSelectContact"
+     />
+     ```
+   - 保证了主页面只留下四个最核心的 avatar/name 解析工具，并与子组件建立优雅的双向事件桥梁。
+   - 打包构建成功，零报错，无任何编译及执行期隐患。
+
+### 2026-05-19 微信登录与高级管理弹窗 LoginModal.vue 独立化重构
+1. **重构提取登录管理弹窗组件 (LoginModal.vue)**:
+   - 新建了 `src/components/LoginModal.vue` 组件，将原有的 `loginVisible` 弹窗及其高级控制模块（包含在线状态轮询、唤醒设备登录、绑定手机发送验证码以及 62 免验证登录环境数据提取等，共 80 行模版）彻底隔离开来。
+   - 内置封装了设备高级唤醒状态的高频短轮询定时检测（每 2 秒一次，最多 5 次）以及环境 62 数据的多格式兼容处理，对上层暴露出极度精简的 `@success` 和 `v-model:visible` 回调。
+2. **极轻量化 Home.vue 主文件**:
+   - 移除了 `Home.vue` 主文件中的 `verifyMobile`、`currentAccountResult` 等反应状态，以及 `handleAccountStatusActionForCurrent`、`handleExtract62DataForCurrent` 等高级设备 API 回调。
+   - 将原登录弹窗的代码用优雅的组件声明进行了替换：
+     ```html
+     <LoginModal
+       v-model:visible="loginVisible"
+       :pending-session-key="pendingSessionKey"
+       @success="handleLoginSuccess"
+     />
+     ```
+   - 打包构建成功，零报错，完成了整个主页面的重构优化旅程。
+
+### 2026-05-19 主工作台样式 Home.css 彻底抽离与轻量化
+1. **抽离表现层样式 rules (Home.css)**:
+   - 新建了 `src/views/Home.css` 并将主页面 `Home.vue` 尾部近 530 行的 CSS 样式选择器规则完全迁出。
+   - 使用 Vue 单文件组件的高级外链特性：
+     ```html
+     <style scoped src="./Home.css"></style>
+     ```
+     在保证原有 scoped 隔离的同时，实现了表现层与行为逻辑的优雅分治。
+2. **主页面 Home.vue 精简里程碑**:
+   - 经过全部五个阶段的组件和样式拆解，`Home.vue` 文件体积成功缩减到仅为 **364 行**（较重构前的 2200 行，**代码行数大幅减少 83.3%**）。
+   - 主页面目前极其纯粹，仅承载宏观的三栏和弹窗组件拼装，极大降低了维护人员的认知负担，彻底打通了未来快速迭代和热更新 of 无障碍通道。
+
+### 2026-05-20 微信 GetProfile 头像解析增强（userInfoExt 节点适配）
+1. **解决自身头像显示为空（昵称首字母）的严重问题**：
+   - 微信后端 `GetProfile` 接口响应体中，自身头像 URL 字段（如 `smallHeadImgUrl` 与 `bigHeadImgUrl` 等）并不嵌套于 `userInfo` 内，而是存放于与其同级的 `userInfoExt` 属性内。
+   - 原有逻辑因只解包并解析 `userInfo`，导致提取头像链接时恒为 `undefined`。
+2. **适配 `userInfoExt` 节点解析链**：
+   - 重构了 `src/store/account.ts` 中的 `fetchProfileAndFixUuid`（手动同步自身资料/上线激活）与 `syncAccountsFromServer`（冷启动 `TOKEN_KEY` 模式）方法。
+   - 增加对 `userInfoExt` / `UserInfoExt` 节点的解包提取。优先从中获取各大小头像 URL 并防御性地通过 `extractAvatarString` 进行解包处理，无法提取时才退回 `userInfo` 进行兜底提取。
+3. **日志输出与编译测试**：
+   - 在控制台中加入了对 `userInfoExt` 节点的解包打印及 `rawSmallUrl` 调试信息。
+   - 运行并完成了 `npx vite build` 生产构建打包校验，完全成功通过且零 TypeScript/Vue 模板警告，完全治愈了同步头像始终为空的缺陷。
+
