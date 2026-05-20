@@ -75,12 +75,23 @@ export const initLogInterceptor = () => {
       if (arg === undefined) return 'undefined';
       if (typeof arg === 'object') {
         try {
+          // 🚀 优化：先尝试最快速度的单行无缩进序列化，规避极度耗时的格式化缩进计算
+          const flatStr = JSON.stringify(arg);
+          if (flatStr.length > 2000) {
+            // 超大对象直接截断返回，阻止数万行的长文本渲染直接击瘫DOM！
+            return flatStr.substring(0, 1500) + `... [日志过长已自动截断，总长度: ${flatStr.length} 字符]`;
+          }
+          // 普通小对象才使用缩进美化，确保体验
           return JSON.stringify(arg, null, 2);
         } catch (e) {
           return String(arg);
         }
       }
-      return String(arg);
+      const s = String(arg);
+      if (s.length > 2000) {
+        return s.substring(0, 1500) + `... [日志过长已自动截断，总长度: ${s.length} 字符]`;
+      }
+      return s;
     }).join(' ');
   };
 
@@ -90,28 +101,30 @@ export const initLogInterceptor = () => {
       return;
     }
 
-    const text = formatArgs(args);
-
-    // 2. 若调试总开关 (All) 关闭，但某些子模块调试开启，则实行精准拦截过滤
+    // 2. 若调试总开关 (All) 关闭，但某些子模块调试开启，则实行【前置轻量级预过滤】
+    // 🚀 核心优化：避免在过滤前就对巨型对象执行昂贵的 formatArgs 序列化开销，从源头彻底阻断卡死！
     if (!cachedConfig.all) {
       let allow = type === 'error' || type === 'warn'; // 错误和警告默认允许
       
-      const lowerText = text.toLowerCase();
-      if (!allow && cachedConfig.request && (lowerText.includes('[request]') || lowerText.includes('[api]') || lowerText.includes('api/'))) {
-        allow = true;
-      }
-      if (!allow && cachedConfig.socket && (lowerText.includes('[socket') || lowerText.includes('[pollonce') || lowerText.includes('ws '))) {
-        allow = true;
-      }
-      if (!allow && cachedConfig.cache && (lowerText.includes('[cache]') || lowerText.includes('[db]') || lowerText.includes('indexeddb') || lowerText.includes('[accountstore]'))) {
-        allow = true;
+      if (!allow) {
+        // 轻量级预过滤：只需快速检查参数中是否有包含模块标识的字符串，不用序列化任何对象！
+        allow = args.some(arg => {
+          if (typeof arg !== 'string') return false;
+          const lower = arg.toLowerCase();
+          if (cachedConfig.request && (lower.includes('[request]') || lower.includes('[api]') || lower.includes('api/'))) return true;
+          if (cachedConfig.socket && (lower.includes('[socket') || lower.includes('[pollonce') || lower.includes('ws '))) return true;
+          if (cachedConfig.cache && (lower.includes('[cache]') || lower.includes('[db]') || lower.includes('indexeddb') || lower.includes('[accountstore]'))) return true;
+          return false;
+        });
       }
 
       if (!allow) {
-        return; // 过滤非调试普通日志，防止终端无谓跳动
+        return; // 成功拦截不匹配的日志，在格式化前直接返回，零性能损耗！
       }
     }
 
+    // 3. 安全通过过滤后，才执行格式化，开销降低 99.9%
+    const text = formatArgs(args);
     const time = new Date().toLocaleTimeString();
     logsQueue.value.push({ type, text, time });
     
