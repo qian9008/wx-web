@@ -226,8 +226,7 @@ export const useAccountStore = defineStore('account', {
 
       if (redisSyncDebounceTimer) clearTimeout(redisSyncDebounceTimer);
       redisSyncDebounceTimer = setTimeout(async () => {
-        const config = this.getEffectiveAvatarConfig(uuid);
-        const readUrl = config.redisWriteBackUrl || 'http://192.168.50.99:7377/other/SaveContactToRedis?key=';
+        const readUrl = this.resolveRedisUrl(uuid, '/other/SaveContactToRedis');
         if (readUrl) {
           console.log(`[AccountStore:Redis] 检测到新 Redis 地址已填写，自动触发增量读回同步... (账号: ${uuid})`);
           await this.syncViaRedis(uuid, key);
@@ -243,10 +242,43 @@ export const useAccountStore = defineStore('account', {
         return {
           downloadEnabled: config.downloadEnabled !== false,
           cacheEnabled: config.cacheEnabled !== false,
-          isRedisLanMode: config.isRedisLanMode !== undefined ? !!config.isRedisLanMode : globalConf.isRedisLanMode
+          isRedisLanMode: config.isRedisLanMode !== undefined ? !!config.isRedisLanMode : globalConf.isRedisLanMode,
+          redisWriteBackUrl: config.redisWriteBackUrl !== undefined ? config.redisWriteBackUrl : globalConf.redisWriteBackUrl
         };
       }
       return globalConf;
+    },
+
+    /**
+     * 动态解析新 Redis 服务器具体的 API 接口完整地址
+     * 自动处理简化后的 IP:Port 输入，并兼容历史绝对 URL 配置，同时附带会话 key
+     */
+    resolveRedisUrl(uuid: string, apiPath: string): string {
+      const config = this.getEffectiveAvatarConfig(uuid);
+      let baseUrl = config.redisWriteBackUrl || '';
+      if (!baseUrl) {
+        baseUrl = 'http://192.168.50.99:7379';
+      }
+      baseUrl = baseUrl.trim().replace(/\/$/, '');
+      
+      // 兼容旧版包含绝对路径的形式 (包含 /other/)
+      if (baseUrl.includes('/other/')) {
+        try {
+          const urlObj = new URL(baseUrl);
+          baseUrl = `${urlObj.protocol}//${urlObj.host}`;
+        } catch (e) {
+          const match = baseUrl.match(/^(https?:\/\/[^\/]+)/);
+          if (match) baseUrl = match[1];
+        }
+      }
+      
+      // 补充默认协议
+      if (!baseUrl.startsWith('http://') && !baseUrl.startsWith('https://')) {
+        baseUrl = `http://${baseUrl}`;
+      }
+      
+      const key = this.accounts.find(a => a.uuid === uuid)?.sessionKey || this.tokenKey || '';
+      return `${baseUrl}${apiPath}?key=${key}`;
     },
 
     /**
@@ -348,15 +380,8 @@ export const useAccountStore = defineStore('account', {
       }
 
       // --- 阶段 B：新 Redis 读回补写联系人（自动启动，在不同服务器） ---
-      const config = this.getEffectiveAvatarConfig(uuid);
-      let readUrl = config.redisWriteBackUrl || 'http://192.168.50.99:7377/other/SaveContactToRedis?key=';
+      const readUrl = this.resolveRedisUrl(uuid, '/other/SaveContactToRedis');
       if (readUrl) {
-        if (!readUrl.includes('?key=')) {
-          readUrl = `${readUrl}?key=${key}`;
-        } else if (readUrl.endsWith('?key=')) {
-          readUrl = `${readUrl}${key}`;
-        }
-
         console.log(`[AccountStore:Redis] 自动从新 Redis 读回补写联系人 (URL: ${readUrl})`);
         try {
           let newRes: any = null;
@@ -1305,16 +1330,24 @@ export const useAccountStore = defineStore('account', {
     async saveAllContactsToRedis(uuid: string) {
       const key = this.accounts.find(a => a.uuid === uuid)?.sessionKey;
       if (!key) return;
-      const contacts = Object.values(this.accountContactMaps[uuid] || {});
+      // 过滤联系人：只回写单聊/个人联系人，排除群聊与公众号/系统特殊账号
+      const contacts = Object.values(this.accountContactMaps[uuid] || {}).filter((c: any) => {
+        const wxid = c.userName?.str || c.UserName?.str || c.wxid || c.userName || c.UserName || '';
+        if (!wxid) return false;
+        
+        // 排除群聊
+        if (wxid.endsWith('@chatroom')) return false;
+        
+        // 排除公众号与系统内置特殊账号
+        const specialIds = ['fmessage', 'medianote', 'floatbottle', 'newsapp', 'helper_entry', 'filehelper'];
+        if (wxid.startsWith('gh_') || specialIds.includes(wxid)) return false;
+        
+        return true;
+      });
       if (contacts.length === 0) return;
       
-      const config = this.getEffectiveAvatarConfig(uuid);
-      let writeBackUrl = config.redisWriteBackUrl || 'http://192.168.50.99:7377/other/SaveContactToRedis?key=';
-      if (!writeBackUrl.includes('?key=')) {
-        writeBackUrl = `${writeBackUrl}?key=${key}`;
-      } else if (writeBackUrl.endsWith('?key=')) {
-        writeBackUrl = `${writeBackUrl}${key}`;
-      }
+      const writeBackUrl = this.resolveRedisUrl(uuid, '/other/SaveContactToRedis');
+      if (!writeBackUrl) return;
       
       console.log(`[AccountStore:Redis] 手动回写所有联系人 (${contacts.length} 个) 到 Redis: ${writeBackUrl}`);
       try {

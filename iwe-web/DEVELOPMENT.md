@@ -298,3 +298,21 @@
    - 在控制台中加入了对 `userInfoExt` 节点的解包打印及 `rawSmallUrl` 调试信息。
    - 运行并完成了 `npx vite build` 生产构建打包校验，完全成功通过且零 TypeScript/Vue 模板警告，完全治愈了同步头像始终为空的缺陷。
 
+### 2026-05-20 手动云端备份、新 Redis IP格式简化与输入解耦防抖重构
+1. **手工聊天记录备份与读回功能实现 (`chat.ts` & `SettingsModal.vue`)**：
+   - 在前端 Pinia 的 `chatStore` 中新增了 `saveAllMessagesToRedis(userName)` 一键打包备份聊天记录与 `loadAllMessagesFromRedis(userName)` 读回恢复聊天记录功能。
+   - 在“当前账号设置 -> 数据通道”内新增了“聊天记录云备份/恢复”配置组，提供了“批量备份聊天记录”和“读回聊天记录”两个操作按钮，并配置了优雅的 `loading` 异步状态控制。
+2. **极速 Redis 通道 IP/端口 输入格式简化与自动拼接 (`account.ts`)**：
+   - 前端 Redis 地址的配置字段改为只需输入简短的“协议+域名(或IP)+端口”，无需完整长链接（例如 `http://192.168.50.99:7379`）。
+   - 在 `accountStore` 中定义了动态 URL 解析辅助 Action：`resolveRedisUrl(uuid, apiPath)`，实现由基准 IP 动态补齐特定读写 API（如 `/other/SaveContactToRedis?key=...`）并完美向下兼容旧版绝对路径链接。
+3. **安全数据回传过滤拦截机制，排除公众号与群聊**：
+   - 为了防止群聊与公众号数据大量冗余回传、污染云端数据库并保护隐私，在通讯录回写与聊天记录云备份过滤机制中添加了拦截过滤网。
+   - 自动阻断任何 `@chatroom` 结尾的群组、`gh_` 开头的公众号以及系统保留的特殊账号（例如 `filehelper`、`fmessage`、`medianote` 等）的回传。
+4. **解耦输入双向绑定以实现彻底防抖，增设手动保存按钮**：
+   - 针对用户在打字输入 Redis 地址的过程中，实时触发 Pinia 数据同步网络请求的问题，将全局和个人设置中的 Redis 输入框与 Pinia 状态解耦，改为绑定 to 本地的 `tempGlobalRedisUrl` 和 `tempPersonalRedisUrl` 临时变量。
+   - 在输入框右侧增设了“保存全局地址”与“保存账号地址”动作按钮。只有当用户输入完毕主动点击保存时，才会合并写入 Pinia 仓库，完全消除了输入过程中的即时回写，防止同步冲突。
+   - 适配了 `visible` 模态框显隐及切换微信账号的 Watch 监听器，确保每次打开设置均能自动将 Pinia 的最新状态正确还原加载至本地输入框。
+5. **后端 Redis 存储演进为真正的 Hash（哈希表）结构并实现接口健壮性优化**：
+   - 后端接口采纳了 **方案 2（Hash 哈希表存储结构）** 进行全量重写。
+   - 将原 String 字符串存储结构 (`redis.set` / `redis.get`) 升级为基于 `redis.hset` 与 `redis.hget` 命令的高性能 Hash 哈希表存储（以 `wechat:contacts` 作为键名，微信 key 作为字段 field 存储 JSON），节省了 Redis 的键名开销，大幅降低了内存消耗并提升了批量检索效率。
+   - 修复了原后端写入操作不等待 Promise (`await`) 提前返回 success 导致的假保存缺陷，将所有 Redis 动作调整为 `await` 阻塞机制，并对数据 JSON 反序列化及数据库异常增加了完善的安全 Try-Catch 错误拦截与响应状态码（404/500）规范化设计。

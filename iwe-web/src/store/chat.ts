@@ -2,6 +2,7 @@ import { defineStore } from 'pinia';
 import { useAccountStore } from './account';
 import { contactCache } from '@/utils/contactCache';
 import { isDebug } from '@/utils/debug';
+import request from '@/utils/request';
 
 export interface AppMessage {
   id: string;
@@ -426,6 +427,88 @@ export const useChatStore = defineStore('chat', {
         this.accountConversations = {};
       }
       this._msgIdDedup.clear();
+    },
+
+    async saveAllMessagesToRedis(userName: string) {
+      const accountStore = useAccountStore();
+      const writeBackUrl = accountStore.resolveRedisUrl(userName, '/other/SaveMsgToRedis');
+      if (!writeBackUrl) throw new Error('未配置新 Redis 地址');
+      
+      // 过滤聊天记录：排除群聊和公众号/系统特殊账号，只备份个人单聊的聊天数据
+      const filteredMessages: Record<string, any> = {};
+      const msgs = this.accountMessages[userName] || {};
+      Object.keys(msgs).forEach(partnerId => {
+        if (partnerId.endsWith('@chatroom')) return;
+        const specialIds = ['fmessage', 'medianote', 'floatbottle', 'newsapp', 'helper_entry', 'filehelper'];
+        if (partnerId.startsWith('gh_') || specialIds.includes(partnerId)) return;
+        filteredMessages[partnerId] = msgs[partnerId];
+      });
+
+      const filteredConversations = (this.accountConversations[userName] || []).filter((conv: any) => {
+        const wxid = conv.wxid || '';
+        if (wxid.endsWith('@chatroom')) return false;
+        const specialIds = ['fmessage', 'medianote', 'floatbottle', 'newsapp', 'helper_entry', 'filehelper'];
+        if (wxid.startsWith('gh_') || specialIds.includes(wxid)) return false;
+        return true;
+      });
+
+      const payload = {
+        accountMessages: filteredMessages,
+        accountConversations: filteredConversations
+      };
+      
+      console.log(`[ChatStore:Redis] 手动备份聊天记录到 Redis: ${writeBackUrl}`);
+      await request.post(writeBackUrl, payload);
+    },
+
+    async loadAllMessagesFromRedis(userName: string) {
+      const accountStore = useAccountStore();
+      const readUrl = accountStore.resolveRedisUrl(userName, '/other/SaveMsgToRedis');
+      if (!readUrl) throw new Error('未配置新 Redis 地址');
+      
+      console.log(`[ChatStore:Redis] 手动从新 Redis 读回聊天记录 (URL: ${readUrl})`);
+      let res: any = null;
+      try {
+        // 先尝试 GET 请求读取
+        res = await request.get(readUrl);
+        console.log('[ChatStore:Redis] 读回聊天记录响应 (GET):', res);
+      } catch (getErr) {
+        console.warn('[ChatStore:Redis] 读回聊天记录 GET 失败，尝试 POST:', getErr);
+      }
+      
+      // 如果 GET 没拿到，尝试用 POST 空对象读回
+      if (!res || (typeof res === 'object' && Object.keys(res).length === 0)) {
+        res = await request.post(readUrl, {});
+        console.log('[ChatStore:Redis] 读回聊天记录响应 (POST):', res);
+      }
+      
+      if (res) {
+        if (typeof res === 'string') {
+          try {
+            res = JSON.parse(res);
+          } catch (e) {}
+        }
+        
+        const data = res.Data !== undefined ? res.Data : (res.data !== undefined ? res.data : res);
+        
+        if (data && (data.accountMessages || data.accountConversations)) {
+          this.accountMessages[userName] = data.accountMessages || {};
+          this.accountConversations[userName] = data.accountConversations || [];
+          
+          // 重新把读回的消息 ID 塞入去重 Set 中，防止收到重复消息
+          Object.values(this.accountMessages[userName]).forEach((msgs: any) => {
+            if (Array.isArray(msgs)) {
+              msgs.forEach(m => {
+                if (m.id) {
+                  this._msgIdDedup.add(String(m.id));
+                }
+              });
+            }
+          });
+          return true;
+        }
+      }
+      throw new Error('未在 Redis 中找到有效的聊天记录');
     },
 
     // 独立清理并持久化未读数

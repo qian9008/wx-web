@@ -350,12 +350,14 @@
                 @update:model-value="(val: any) => accountStore.updateAvatarConfig({ isRedisLanMode: val }, true)" 
               />
             </a-form-item>
-            <a-form-item label="默认新 Redis 地址 (可选)" help="额外配置新 Redis 读写服务，默认启动回写联系人与读回功能">
-              <a-input 
-                :model-value="accountStore.globalAvatarConfig.redisWriteBackUrl" 
-                @update:model-value="(val: any) => accountStore.updateAvatarConfig({ redisWriteBackUrl: val }, true)" 
-                placeholder="例如: http://192.168.50.99:7377/other/SaveContactToRedis?key="
-              />
+            <a-form-item label="默认新 Redis 服务地址 (可选)" help="仅需输入新 Redis 的协议、域名 (IP) 和端口即可。系统会自动拼装具体的读写接口">
+              <div style="display: flex; gap: 8px; width: 100%;">
+                <a-input 
+                  v-model="tempGlobalRedisUrl" 
+                  placeholder="例如: http://192.168.50.99:7379"
+                />
+                <a-button type="primary" @click="handleSaveGlobalRedisUrl">保存全局地址</a-button>
+              </div>
             </a-form-item>
           </a-form>
         </a-tab-pane>
@@ -389,18 +391,20 @@
             </a-form-item>
             <a-form-item 
               v-if="accountStore.getEffectiveAvatarConfig().isRedisLanMode"
-              label="新 Redis 地址 (可选)" 
-              help="配置在不同服务器的新 Redis 接口，用于自动补写并读回联系人"
+              label="新 Redis 服务地址 (可选)" 
+              help="仅需输入新 Redis 的协议、域名 (IP) 和端口，系统会自动拼装接口来进行同步、回写和备份"
             >
-              <a-input 
-                :model-value="accountStore.getEffectiveAvatarConfig().redisWriteBackUrl" 
-                @update:model-value="(val: any) => accountStore.updateAvatarConfig({ redisWriteBackUrl: val })" 
-                placeholder="例如: http://192.168.50.99:7377/other/SaveContactToRedis?key="
-              />
+              <div style="display: flex; gap: 8px; width: 100%;">
+                <a-input 
+                  v-model="tempPersonalRedisUrl" 
+                  placeholder="例如: http://192.168.50.99:7379"
+                />
+                <a-button type="primary" @click="handleSavePersonalRedisUrl">保存账号地址</a-button>
+              </div>
             </a-form-item>
             <a-form-item 
               v-if="accountStore.getEffectiveAvatarConfig().isRedisLanMode"
-              label="回写操作" 
+              label="通讯录同步回写" 
               help="手动将当前账号的所有联系人一次性批量补写保存到新 Redis 服务器"
             >
               <a-button 
@@ -412,6 +416,32 @@
               >
                 批量补写所有联系人到新 Redis
               </a-button>
+            </a-form-item>
+            <a-form-item 
+              v-if="accountStore.getEffectiveAvatarConfig().isRedisLanMode"
+              label="聊天记录云备份/恢复" 
+              help="手动将当前账号的所有聊天记录与会话列表备份到新 Redis 数据库，或者从新 Redis 读回"
+            >
+              <a-space>
+                <a-button 
+                  type="outline" 
+                  size="small" 
+                  status="success" 
+                  @click="handleSaveAllMessagesToRedis"
+                  :loading="saveAllMessagesLoading"
+                >
+                  批量备份聊天记录
+                </a-button>
+                <a-button 
+                  type="outline" 
+                  size="small" 
+                  status="warning" 
+                  @click="handleLoadAllMessagesFromRedis"
+                  :loading="loadAllMessagesLoading"
+                >
+                  读回聊天记录
+                </a-button>
+              </a-space>
             </a-form-item>
             <a-divider>数据获取</a-divider>
             <a-form-item label="好友列表" help="调用 /friend/GetFriendList 获取最新好友列表">
@@ -460,9 +490,14 @@ const adminCallbackUrl = ref('');
 const adminActionResult = ref('');
 const adminActionData = ref<any>(null);
 
+const tempGlobalRedisUrl = ref('');
+const tempPersonalRedisUrl = ref('');
+
 const contactLoading = ref(false);
 const friendListLoading = ref(false);
 const saveAllContactsLoading = ref(false);
+const saveAllMessagesLoading = ref(false);
+const loadAllMessagesLoading = ref(false);
 
 const cacheStats = ref({ 
   contactCount: 0, 
@@ -559,6 +594,11 @@ watch(() => props.visible, (newVal) => {
     activeAdminTab.value = props.context === 'personal' ? 'personal' : '1';
     baseConfigForm.baseUrl = accountStore.baseUrl;
     baseConfigForm.adminKey = accountStore.adminKey;
+    
+    // 初始化本地临时 Redis 地址，防止输入过程触发实时同步
+    tempGlobalRedisUrl.value = accountStore.globalAvatarConfig.redisWriteBackUrl || '';
+    tempPersonalRedisUrl.value = accountStore.getEffectiveAvatarConfig().redisWriteBackUrl || '';
+
     // 重置扫描状态，避免打开时展示过时的缓存数据
     Object.keys(isScanned).forEach(k => {
       (isScanned as any)[k] = false;
@@ -566,9 +606,24 @@ watch(() => props.visible, (newVal) => {
   }
 });
 
+// 当切换当前账号时，也需要重新加载对应的 Redis 地址
+watch(() => accountStore.activeAccountUuid, () => {
+  tempPersonalRedisUrl.value = accountStore.getEffectiveAvatarConfig().redisWriteBackUrl || '';
+});
+
 const handleSaveConfig = () => {
   accountStore.setGlobalConfig(baseConfigForm.baseUrl, baseConfigForm.adminKey, accountStore.tokenKey, accountStore.debug);
   window.location.reload();
+};
+
+const handleSaveGlobalRedisUrl = () => {
+  accountStore.updateAvatarConfig({ redisWriteBackUrl: tempGlobalRedisUrl.value }, true);
+  Message.success('全局默认 Redis 地址已成功保存！');
+};
+
+const handleSavePersonalRedisUrl = () => {
+  accountStore.updateAvatarConfig({ redisWriteBackUrl: tempPersonalRedisUrl.value });
+  Message.success('当前账号 Redis 地址已成功保存，已触发同步！');
 };
 
 const handleAdminAction = async (type: string) => {
@@ -650,6 +705,36 @@ const handleSaveAllContactsToRedis = async () => {
     Message.error('回写失败: ' + err.message);
   } finally {
     saveAllContactsLoading.value = false;
+  }
+};
+
+const handleSaveAllMessagesToRedis = async () => {
+  const uuid = accountStore.activeAccountUuid;
+  if (!uuid) return Message.warning('请先选择活跃账号');
+  try {
+    saveAllMessagesLoading.value = true;
+    Message.info('开始手动备份聊天记录到 Redis...');
+    await chatStore.saveAllMessagesToRedis(uuid);
+    Message.success('聊天记录备份成功！');
+  } catch (err: any) {
+    Message.error('备份失败: ' + err.message);
+  } finally {
+    saveAllMessagesLoading.value = false;
+  }
+};
+
+const handleLoadAllMessagesFromRedis = async () => {
+  const uuid = accountStore.activeAccountUuid;
+  if (!uuid) return Message.warning('请先选择活跃账号');
+  try {
+    loadAllMessagesLoading.value = true;
+    Message.info('开始从 Redis 读回聊天记录...');
+    await chatStore.loadAllMessagesFromRedis(uuid);
+    Message.success('聊天记录读回成功！');
+  } catch (err: any) {
+    Message.error('读回失败: ' + err.message);
+  } finally {
+    loadAllMessagesLoading.value = false;
   }
 };
 
