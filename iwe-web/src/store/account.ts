@@ -11,7 +11,6 @@ import { Message } from '@arco-design/web-vue';
 // 模块级防抖定时器
 let redisSyncDebounceTimer: any = null;
 let redisWritebackDebounceTimer: any = null;
-let lastRedisWarnTime = 0;
 
 const extractAvatarString = (obj: any): string => {
   if (!obj) return '';
@@ -1289,16 +1288,8 @@ export const useAccountStore = defineStore('account', {
       if (!this.isRedisMode(uuid)) return;
       
       // 🔴 核心安全红线：如果当前账号的联系人列表尚未加载完毕，绝不准回写，防止空内存覆盖 Redis 完整数据！
-      if (!this.isContactListLoadedMap[uuid]) {
-        if (isDebug('cache')) {
-          const now = Date.now();
-          if (now - lastRedisWarnTime > 3000) {
-            lastRedisWarnTime = now;
-            console.warn(`[AccountStore:Redis] 拒绝自动回写：账号 ${uuid} 的联系人尚未完全加载，防止覆盖冲掉 Redis 完整数据！`);
-          }
-        }
-        return;
-      }
+      // 🚀 根源优化：此拦截动作在同步期间属于完全预期的业务安全保底，直接静默 return 即可，不打印任何 warn 警告，彻底告别日志刷屏！
+      if (!this.isContactListLoadedMap[uuid]) return;
 
       if (redisWritebackDebounceTimer) clearTimeout(redisWritebackDebounceTimer);
       redisWritebackDebounceTimer = setTimeout(async () => {
