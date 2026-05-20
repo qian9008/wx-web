@@ -7,18 +7,27 @@ interface DebugConfig {
   cache: boolean;
 }
 
-// 内存中的 Debug 配置缓存副本，规避高频同步访问 localStorage 的性能损耗
-let cachedConfig: DebugConfig = {
-  all: false,
-  request: false,
-  socket: false,
-  cache: false
+// 🚀 在 window 对象上挂载全局唯一的配置，彻底击碎打包环境中由“模块多实例”引起的配置状态分裂死穴！
+const getGlobalConfig = (): DebugConfig => {
+  if (typeof window !== 'undefined') {
+    if (!(window as any).__iwe_debug_config__) {
+      (window as any).__iwe_debug_config__ = {
+        all: false,
+        request: false,
+        socket: false,
+        cache: false
+      };
+    }
+    return (window as any).__iwe_debug_config__;
+  }
+  return { all: false, request: false, socket: false, cache: false };
 };
 
 // 初始化从 localStorage 读取或同步最新的配置
 export const syncDebugConfig = (newConfig?: Partial<DebugConfig>) => {
+  const globalConf = getGlobalConfig();
   if (newConfig) {
-    cachedConfig = { ...cachedConfig, ...newConfig };
+    Object.assign(globalConf, newConfig);
     return;
   }
   
@@ -26,14 +35,15 @@ export const syncDebugConfig = (newConfig?: Partial<DebugConfig>) => {
     const configStr = localStorage.getItem('debug_config');
     if (configStr) {
       const parsed = JSON.parse(configStr);
-      cachedConfig = {
-        all: !!parsed.all,
-        request: !!parsed.request,
-        socket: !!parsed.socket,
-        cache: !!parsed.cache
-      };
+      globalConf.all = !!parsed.all;
+      globalConf.request = !!parsed.request;
+      globalConf.socket = !!parsed.socket;
+      globalConf.cache = !!parsed.cache;
     } else {
-      cachedConfig = { all: false, request: false, socket: false, cache: false };
+      globalConf.all = false;
+      globalConf.request = false;
+      globalConf.socket = false;
+      globalConf.cache = false;
     }
   } catch (e) {
     console.error('[Debug] 加载本地配置失败:', e);
@@ -43,9 +53,10 @@ export const syncDebugConfig = (newConfig?: Partial<DebugConfig>) => {
 // 预先初始化一次
 syncDebugConfig();
 
-// 优化后的极速 isDebug 检测，直接利用内存镜像进行 O(1) 判定
+// 优化后的极速 isDebug 检测，直接利用全局 window 内存镜像进行 O(1) 判定
 export const isDebug = (module: 'socket' | 'request' | 'cache'): boolean => {
-  return !!(cachedConfig.all || cachedConfig[module]);
+  const globalConf = getGlobalConfig();
+  return !!(globalConf.all || globalConf[module]);
 };
 
 // --- 内置控制台日志拦截捕获机制 ---
@@ -96,14 +107,15 @@ export const initLogInterceptor = () => {
   };
 
   const pushToQueue = (type: 'log' | 'warn' | 'error', args: any[]) => {
+    const globalConf = getGlobalConfig();
     // 1. 若没有开启任何调试开关，直接不记录，保持内置终端彻底静默
-    if (!cachedConfig.all && !cachedConfig.request && !cachedConfig.socket && !cachedConfig.cache) {
+    if (!globalConf.all && !globalConf.request && !globalConf.socket && !globalConf.cache) {
       return;
     }
 
     // 2. 若调试总开关 (All) 关闭，但某些子模块调试开启，则实行【前置轻量级预过滤】
     // 🚀 核心优化：避免在过滤前就对巨型对象执行昂贵的 formatArgs 序列化开销，从源头彻底阻断卡死！
-    if (!cachedConfig.all) {
+    if (!globalConf.all) {
       let allow = type === 'error' || type === 'warn'; // 错误和警告默认允许
       
       if (!allow) {
@@ -111,9 +123,9 @@ export const initLogInterceptor = () => {
         allow = args.some(arg => {
           if (typeof arg !== 'string') return false;
           const lower = arg.toLowerCase();
-          if (cachedConfig.request && (lower.includes('[request]') || lower.includes('[api]') || lower.includes('api/'))) return true;
-          if (cachedConfig.socket && (lower.includes('[socket') || lower.includes('[pollonce') || lower.includes('ws '))) return true;
-          if (cachedConfig.cache && (lower.includes('[cache]') || lower.includes('[db]') || lower.includes('indexeddb') || lower.includes('[accountstore]'))) return true;
+          if (globalConf.request && (lower.includes('[request]') || lower.includes('[api]') || lower.includes('api/'))) return true;
+          if (globalConf.socket && (lower.includes('[socket') || lower.includes('[pollonce') || lower.includes('ws '))) return true;
+          if (globalConf.cache && (lower.includes('[cache]') || lower.includes('[db]') || lower.includes('indexeddb') || lower.includes('[accountstore]'))) return true;
           return false;
         });
       }
