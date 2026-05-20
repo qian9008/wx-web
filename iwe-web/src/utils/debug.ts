@@ -56,7 +56,8 @@ syncDebugConfig();
 // 优化后的极速 isDebug 检测，直接利用全局 window 内存镜像进行 O(1) 判定
 export const isDebug = (module: 'socket' | 'request' | 'cache'): boolean => {
   const globalConf = getGlobalConfig();
-  return !!(globalConf.all || globalConf[module]);
+  // 🔴 强力总阀门（电闸）逻辑：总开关 (All) 关闭时，一切调试断电静默，isDebug 必为 false！
+  return !!(globalConf.all && globalConf[module]);
 };
 
 // --- 内置控制台日志拦截捕获机制 ---

@@ -261,7 +261,7 @@
                 <a-form-item label="总开关 (All)">
                   <a-switch 
                     :model-value="accountStore.debug.all" 
-                    @update:model-value="(val: any) => accountStore.updateDebugConfig({ all: val })" 
+                    @update:model-value="(val: any) => handleAllDebugSwitch(val)" 
                   />
                 </a-form-item>
               </a-col>
@@ -535,6 +535,15 @@ const handleCopyLogs = () => {
 const handleClearPanelLogs = () => {
   logsQueue.value = [];
   Message.success('面板显示日志已清空');
+};
+
+const handleAllDebugSwitch = (val: boolean) => {
+  accountStore.updateDebugConfig({
+    all: val,
+    request: val,
+    socket: val,
+    cache: val
+  });
 };
 
 const activeAccountNickname = computed(() => {
