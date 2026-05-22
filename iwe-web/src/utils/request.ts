@@ -8,9 +8,10 @@ const service = axios.create({
 
 service.interceptors.request.use(
   (config) => {
-    const baseUrl = localStorage.getItem('baseUrl') || localStorage.getItem('iwe_base_url') || '';
-    const adminKey = localStorage.getItem('ADMIN_KEY');
-    const tokenKey = localStorage.getItem('TOKEN_KEY');
+    const isDemoMode = localStorage.getItem('isDemoMode') === 'true';
+    const baseUrl = isDemoMode ? '' : (localStorage.getItem('baseUrl') || localStorage.getItem('iwe_base_url') || '');
+    const adminKey = isDemoMode ? '' : localStorage.getItem('ADMIN_KEY');
+    const tokenKey = isDemoMode ? '' : localStorage.getItem('TOKEN_KEY');
 
     if (isDebug('request')) {
       console.log(`[Request] ${config.method?.toUpperCase()} ${config.url}`, config.params || '', config.data || '');

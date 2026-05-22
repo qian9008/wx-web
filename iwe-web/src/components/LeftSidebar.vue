@@ -2,10 +2,11 @@
   <!-- 第一栏：账号栏 -->
   <div v-if="!accountStore.tokenKey" class="column account-bar">
     <!-- 顶部 Logo / 装饰 -->
-    <div class="account-bar-logo">
+    <div class="account-bar-logo" style="display: flex; flex-direction: column; align-items: center; height: auto;">
       <div class="logo-inner">
         <icon-thunderbolt :size="16" />
       </div>
+      <div v-if="accountStore.isDemoMode" class="sidebar-demo-badge">DEMO</div>
     </div>
     
     <div class="bar-divider"></div>
@@ -70,7 +71,7 @@
   <!-- 第二栏：功能导航 -->
   <div class="column nav-bar">
     <!-- 顶部当前账号在线状态装饰 & 支持点击手动在线检测 -->
-    <div class="nav-bar-header">
+    <div class="nav-bar-header" style="display: flex; flex-direction: column; align-items: center; height: auto; gap: 4px; margin-bottom: 16px;">
       <div class="status-indicator" style="cursor: pointer;">
         <a-tooltip :content="activeAccountOnlineStatus === '在线' ? '当前账号在线 (点击重新检测)' : '当前账号离线 (点击检测上线)'" position="right">
           <div 
@@ -83,6 +84,7 @@
           </div>
         </a-tooltip>
       </div>
+      <div v-if="accountStore.isDemoMode && accountStore.tokenKey" class="sidebar-demo-badge nav-demo-badge">DEMO</div>
     </div>
 
     <!-- 导航项列表 -->
@@ -118,8 +120,8 @@
         </div>
       </a-tooltip>
       
-      <a-tooltip v-if="activeAccountOnlineStatus !== '在线'" :content="accountStore.tokenKey ? '扫码登录微信' : '手动输入授权码登录'" position="right">
-        <div class="nav-item manual-login-item" @click="emit('manualLogin')">
+      <a-tooltip v-if="activeAccountOnlineStatus !== '在线'" :content="loginBtnTooltip" position="right">
+        <div class="nav-item manual-login-item" @click="handleLoginClick">
           <icon-import :size="22" />
         </div>
       </a-tooltip>
@@ -157,6 +159,63 @@ const activeAccountOnlineStatus = computed(() => {
   const acc = accountStore.accounts.find(a => a.uuid === accountStore.activeAccountUuid);
   return acc?.status === 'online' ? '在线' : '离线';
 });
+
+const loginBtnTooltip = computed(() => {
+  if (!accountStore.tokenKey) return '个人登录';
+  
+  // 个人模式下，判断当前账号是否为“空槽位”（即 uuid 为空或等于 sessionKey）
+  const acc = accountStore.accounts.find(a => a.uuid === accountStore.activeAccountUuid);
+  const isEmptySlot = !acc?.uuid || acc.uuid === acc.sessionKey;
+  
+  return isEmptySlot ? '扫码登录微信' : '个人登录';
+});
+
+const handleLoginClick = () => {
+  const acc = accountStore.accounts.find(a => a.uuid === accountStore.activeAccountUuid);
+  const isEmptySlot = !acc?.uuid || acc.uuid === acc.sessionKey;
+
+  if (isEmptySlot) {
+    emit('addAccount'); // 复制全局 + 号内的扫码登录功能
+  } else {
+    emit('manualLogin'); // 触发普通登录/激活
+  }
+};
 </script>
+
+<style scoped>
+.sidebar-demo-badge {
+  font-size: 8px;
+  font-weight: 800;
+  color: #14c9c9;
+  background: rgba(20, 201, 190, 0.15);
+  border: 1px solid rgba(20, 201, 190, 0.4);
+  padding: 1px 4px;
+  border-radius: 4px;
+  margin-top: 4px;
+  letter-spacing: 0.5px;
+  text-shadow: 0 0 6px rgba(20, 201, 190, 0.6);
+  box-shadow: 0 0 8px rgba(20, 201, 190, 0.2);
+  animation: demo-glow 1.5s infinite alternate ease-in-out;
+  user-select: none;
+  z-index: 5;
+}
+
+.nav-demo-badge {
+  margin-top: 4px;
+  font-size: 7px;
+  padding: 0px 3px;
+}
+
+@keyframes demo-glow {
+  0% {
+    box-shadow: 0 0 4px rgba(20, 201, 190, 0.2);
+    border-color: rgba(20, 201, 190, 0.3);
+  }
+  100% {
+    box-shadow: 0 0 10px rgba(20, 201, 190, 0.5);
+    border-color: rgba(20, 201, 190, 0.7);
+  }
+}
+</style>
 
 

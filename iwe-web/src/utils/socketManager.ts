@@ -14,6 +14,10 @@ class GlobalSocketManager {
     if (!userName) return;
 
     const accountStore = useAccountStore();
+    if (accountStore.isDemoMode) {
+      console.log(`[SocketManager:Demo] 演示模式拦截账号 WebSocket 注册: ${userName}`);
+      return;
+    }
     const realWxid = userName;
 
     const existing = this.connections.get(realWxid);
@@ -126,6 +130,11 @@ class GlobalSocketManager {
   }
 
   public stopAccount(wxid: string) {
+    const accountStore = useAccountStore();
+    if (accountStore.isDemoMode) {
+      console.log(`[SocketManager:Demo] 演示模式拦截账号 WebSocket 卸载: ${wxid}`);
+      return;
+    }
     if (this.pollingTimers.has(wxid)) {
       clearTimeout(this.pollingTimers.get(wxid));
       this.pollingTimers.delete(wxid);

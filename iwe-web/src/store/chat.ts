@@ -16,6 +16,9 @@ export interface AppMessage {
   isRevoked: boolean;
   imageUrl?: string;
   statusNotifyData?: any;
+  voiceBufId?: string;
+  voiceLength?: number;
+  voiceUrl?: string;
 }
 
 export interface Conversation {
@@ -87,6 +90,15 @@ export const useChatStore = defineStore('chat', {
     get msgIdSet(): BoundedSet { return (this as any)._msgIdDedup; },
   }),
   actions: {
+    updateMessageImageUrl(userName: string, partnerId: string, msgId: string, newUrl: string) {
+      if (this.accountMessages[userName]?.[partnerId]) {
+        const msgs = this.accountMessages[userName][partnerId];
+        const found = msgs.find(m => String(m.id) === String(msgId));
+        if (found) {
+          found.imageUrl = newUrl;
+        }
+      }
+    },
     async addParsedMessage(userName: string, msg: AppMessage, isHistorical = false) {
       if (this._msgIdDedup.has(String(msg.id))) {
         if (isDebug('socket')) console.log(`[ChatStore] 消息 ID ${msg.id} 已在去重集合中`);
@@ -115,7 +127,8 @@ export const useChatStore = defineStore('chat', {
       const accountStore = useAccountStore();
       if (!accountStore.isRedisMode(userName)) {
         const msgWithPartner = { ...msg, partnerId };
-        await contactCache.saveMessage(userName, msgWithPartner);
+        const config = accountStore.getEffectiveAvatarConfig(userName);
+        await contactCache.saveMessage(userName, msgWithPartner, config.maxMessagesPerConv || 500);
       }
 
       // 2. 更新内存 Store（Fix #2: 二分插入 + Fix #8: 删除冗余的内存层 find 去重）
@@ -203,8 +216,10 @@ export const useChatStore = defineStore('chat', {
     async loadHistory(userName: string, partnerId: string) {
       if (!userName || !partnerId) return;
 
-      // Redis 极速模式下不从 IndexedDB 加载历史（所有数据已在内存中）
       const accountStore = useAccountStore();
+      if (accountStore.isDemoMode) {
+        return;
+      }
       if (accountStore.isRedisMode(userName)) return;
 
       // 🚀 优化：如果内存中已缓存了该联系人的消息，直接跳过 IndexedDB 历史加载
@@ -243,8 +258,10 @@ export const useChatStore = defineStore('chat', {
     async loadConversations(userName: string) {
       if (!userName) return;
 
-      // Redis 极速模式下跳过 IndexedDB 加载（所有会话已在内存中）
       const accountStoreRef = useAccountStore();
+      if (accountStoreRef.isDemoMode) {
+        return;
+      }
       if (accountStoreRef.isRedisMode(userName)) return;
 
       // 🚀 优化：如果内存中已有当前账号的会话列表，直接使用，跳过 IndexedDB 读取
@@ -431,6 +448,10 @@ export const useChatStore = defineStore('chat', {
 
     async saveAllMessagesToRedis(userName: string) {
       const accountStore = useAccountStore();
+      if (accountStore.isDemoMode) {
+        console.log('[ChatStore:Demo] 演示模式拦截 Redis 备份');
+        return;
+      }
       const writeBackUrl = accountStore.resolveRedisUrl(userName, '/other/SaveMsgToRedis');
       if (!writeBackUrl) throw new Error('未配置新 Redis 地址');
       
@@ -463,6 +484,10 @@ export const useChatStore = defineStore('chat', {
 
     async loadAllMessagesFromRedis(userName: string) {
       const accountStore = useAccountStore();
+      if (accountStore.isDemoMode) {
+        console.log('[ChatStore:Demo] 演示模式拦截 Redis 恢复');
+        return true;
+      }
       const readUrl = accountStore.resolveRedisUrl(userName, '/other/SaveMsgToRedis');
       if (!readUrl) throw new Error('未配置新 Redis 地址');
       

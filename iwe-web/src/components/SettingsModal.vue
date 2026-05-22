@@ -114,12 +114,21 @@
           </div>
         </a-tab-pane>
 
-        <a-tab-pane v-if="context === 'global'" key="2" title="数据管理">
+        <a-tab-pane v-if="context === 'global' || context === 'personal'" key="2" title="数据管理">
           <div class="data-mgmt">
+            <!-- 清理范围选择器 (仅管理员菜单下展示) -->
+            <div v-if="context === 'global'" style="margin-bottom: 15px; display: flex; align-items: center; gap: 12px; background: #1e1e1e; padding: 10px; border-radius: 4px; border: 1px solid #333;">
+              <span style="font-size: 13px; font-weight: bold; color: #e5e6eb;">清理范围:</span>
+              <a-radio-group v-model="cleanScope" type="button" size="small" @change="handleCleanScopeChange">
+                <a-radio value="active">当前活跃账号 ({{ activeAccountNickname }})</a-radio>
+                <a-radio value="all">系统全部账号 ({{ accountStore.accounts.length }}个)</a-radio>
+              </a-radio-group>
+            </div>
+
             <div class="scan-all-action" style="margin-bottom: 15px;">
               <a-button type="primary" long :loading="scanLoading.all" @click="handleScanAll">
                 <template #icon><icon-search /></template>
-                一键扫描所有数据占用
+                {{ context === 'global' && cleanScope === 'all' ? '一键扫描所有账号数据占用' : '一键扫描当前账号数据占用' }}
               </a-button>
             </div>
 
@@ -151,7 +160,8 @@
             <a-divider>分表管理</a-divider>
             
             <div class="store-grid">
-              <div class="store-item">
+              <!-- 手动同步通讯录 (仅在当前账号模式下展示) -->
+              <div v-if="context !== 'global' || cleanScope === 'active'" class="store-item">
                 <div class="store-info">
                   <span class="name">通讯录同步</span>
                   <span class="count">{{ Object.keys(accountStore.contactMap).length }} 个联系人</span>
@@ -159,88 +169,125 @@
                 <a-button type="primary" size="mini" :loading="contactLoading" @click="handleManualSyncContacts">手动同步</a-button>
               </div>
 
-              <div class="store-item">
-                 <div class="store-info">
-                   <span class="name">本地头像 data (avatars)</span>
-                   <span class="count">
-                     <template v-if="isScanned.avatars">{{ cacheStats.avatarCount }} 张</template>
-                     <template v-else>未扫描</template>
-                   </span>
-                 </div>
-                 <a-space>
-                   <a-button v-if="!isScanned.avatars" type="outline" size="mini" :loading="scanLoading.avatars" @click="handleScanSingle('avatars')">扫描</a-button>
-                   <a-popconfirm content="确定清空本地头像缓存吗？" @ok="handleClearStore('avatars')">
-                     <a-button type="outline" size="mini" status="warning" :loading="clearLoading.avatars">清理</a-button>
-                   </a-popconfirm>
-                 </a-space>
-               </div>
-
                <div class="store-item">
                 <div class="store-info">
                   <span class="name">联系人 (contacts)</span>
                   <span class="count">
-                    <template v-if="isScanned.contacts">{{ cacheStats.contactCount }} 条</template>
+                    <template v-if="isScanned.contacts">
+                      <span v-if="context === 'global' && cleanScope === 'all'">总计: </span>{{ cacheStats.contactCount }} 条
+                    </template>
                     <template v-else>未扫描</template>
                   </span>
                 </div>
                 <a-space>
                   <a-button v-if="!isScanned.contacts" type="outline" size="mini" :loading="scanLoading.contacts" @click="handleScanSingle('contacts')">扫描</a-button>
-                  <a-popconfirm content="确定清空联系人缓存吗？" @ok="handleClearStore('contacts')">
+                  <a-popconfirm :content="context === 'global' && cleanScope === 'all' ? '确定清空所有账号的联系人缓存吗？' : '确定清空联系人缓存吗？'" @ok="handleClearStore('contacts')">
                     <a-button type="outline" size="mini" status="warning" :loading="clearLoading.contacts">清理</a-button>
                   </a-popconfirm>
                 </a-space>
               </div>
               
-              <div class="store-item">
-                <div class="store-info">
-                  <span class="name">消息记录 (messages)</span>
-                  <span class="count">
-                    <template v-if="isScanned.messages">{{ cacheStats.msgCount }} 条</template>
-                    <template v-else>未扫描</template>
-                  </span>
+              <div class="store-item" style="flex-direction: column; align-items: stretch; gap: 8px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; width: 100%; flex-wrap: wrap; gap: 8px;">
+                  <div class="store-info">
+                    <span class="name" style="font-weight: bold;">消息记录 (messages)</span>
+                    <span class="count">
+                      <template v-if="isScanned.messages">
+                        {{ context === 'global' && cleanScope === 'all' ? '全部账号总消息数' : '总消息数' }}: {{ cacheStats.msgCount }} 条
+                        <span v-if="(context === 'global' && cleanScope === 'all') || (accountStore.activeAccountUuid && accountStore.activeAccountUuid !== 'pending_login')" style="margin-left: 8px; color: #86909c;">
+                          (已过期: <span style="color: #ff9900; font-weight: bold;">{{ cacheStats.expiredMsgCount }}</span> 条 / 
+                          超限: <span style="color: #ff9900; font-weight: bold;">{{ cacheStats.exceededMsgCount }}</span> 条)
+                        </span>
+                      </template>
+                      <template v-else>未扫描</template>
+                    </span>
+                  </div>
+                  <a-space wrap>
+                    <a-button v-if="!isScanned.messages" type="outline" size="mini" :loading="scanLoading.messages" @click="handleScanSingle('messages')">扫描</a-button>
+                    <a-space v-else wrap>
+                      <template v-if="(context === 'global' && cleanScope === 'all') || (accountStore.activeAccountUuid && accountStore.activeAccountUuid !== 'pending_login')">
+                        <a-popconfirm :content="context === 'global' && cleanScope === 'all' ? '确定清理全部账号下所有已过期的消息吗？' : '确定清理所有已过期的消息吗？'" @ok="handleClearExpired">
+                          <a-button type="outline" size="mini" status="warning" :loading="clearLoading.expiredMessages" :disabled="cacheStats.expiredMsgCount === 0">清理已过期</a-button>
+                        </a-popconfirm>
+                        <a-popconfirm :content="context === 'global' && cleanScope === 'all' ? '确定清理全部账号下超出单会话上限的消息吗？' : '确定清理超出单会话上限的消息吗？'" @ok="handleClearExceeded">
+                          <a-button type="outline" size="mini" status="warning" :loading="clearLoading.exceededMessages" :disabled="cacheStats.exceededMsgCount === 0">清理已超限</a-button>
+                        </a-popconfirm>
+                        <a-popconfirm :content="context === 'global' && cleanScope === 'all' ? '确定清理全部账号消息（过期 + 超限）吗？' : '确定执行 A+B 深度清理（清理过期 + 清理超限）吗？'" @ok="handleDeepCleanAB">
+                          <a-button type="primary" size="mini" status="warning" :loading="clearLoading.deepClean" :disabled="cacheStats.expiredMsgCount === 0 && cacheStats.exceededMsgCount === 0">一键 A+B 深度清理</a-button>
+                        </a-popconfirm>
+                      </template>
+                      <a-popconfirm :content="context === 'global' && cleanScope === 'all' ? '确定清空全部账号的群消息吗？' : '确定仅清理群消息吗？'" @ok="handleClearGroupMessages">
+                        <a-button type="outline" size="mini" status="warning" :loading="clearLoading.groupMessages">仅清理群消息</a-button>
+                      </a-popconfirm>
+                      <a-popconfirm :content="context === 'global' && cleanScope === 'all' ? '确定清空全部账号的公众号消息吗？' : '确定仅清理公众号吗？'" @ok="handleClearOfficialMessages">
+                        <a-button type="outline" size="mini" status="warning" :loading="clearLoading.officialMessages">仅清理公众号</a-button>
+                      </a-popconfirm>
+                      <a-popconfirm :content="context === 'global' && cleanScope === 'all' ? '确定清空全部账号的所有消息记录吗？' : '确定清空所有消息记录吗？'" @ok="handleClearStore('messages')">
+                        <a-button type="outline" size="mini" status="danger" :loading="clearLoading.messages">全部清理</a-button>
+                      </a-popconfirm>
+                    </a-space>
+                  </a-space>
                 </div>
-                <a-space>
-                  <a-button v-if="!isScanned.messages" type="outline" size="mini" :loading="scanLoading.messages" @click="handleScanSingle('messages')">扫描</a-button>
-                  <a-popconfirm content="确定仅清理群消息吗？" @ok="handleClearGroupMessages">
-                    <a-button type="outline" size="mini" status="warning" :loading="clearLoading.groupMessages">仅清理群消息</a-button>
-                  </a-popconfirm>
-                  <a-popconfirm content="确定仅清理公众号消息吗？" @ok="handleClearOfficialMessages">
-                    <a-button type="outline" size="mini" status="warning" :loading="clearLoading.officialMessages">仅清理公众号</a-button>
-                  </a-popconfirm>
-                  <a-popconfirm content="确定清空所有消息记录吗？" @ok="handleClearStore('messages')">
-                    <a-button type="outline" size="mini" status="danger" :loading="clearLoading.messages">全部清理</a-button>
-                  </a-popconfirm>
-                </a-space>
+
+                <!-- 消息限额参数配置区 -->
+                <div v-if="(context === 'personal' || cleanScope === 'active') && accountStore.activeAccountUuid && accountStore.activeAccountUuid !== 'pending_login'" style="background: #1e1e1e; padding: 10px; border-radius: 4px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
+                  <span style="font-size: 12px; color: #86909c;">当前账号消息清理参数配置:</span>
+                  <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                      <span style="font-size: 12px; color: #e5e6eb;">单会话限制:</span>
+                      <a-select 
+                        :model-value="activeAccountConfig.maxMessagesPerConv" 
+                        size="mini" 
+                        style="width: 90px;"
+                        @change="(val) => handleUpdateMsgLimit('maxMessagesPerConv', val)"
+                      >
+                        <a-option :value="50">50 条</a-option>
+                        <a-option :value="100">100 条</a-option>
+                        <a-option :value="200">200 条</a-option>
+                        <a-option :value="500">500 条</a-option>
+                        <a-option :value="1000">1000 条</a-option>
+                      </a-select>
+                    </div>
+
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                      <span style="font-size: 12px; color: #e5e6eb;">过期天数:</span>
+                      <a-select 
+                        :model-value="activeAccountConfig.msgTtlDays" 
+                        size="mini" 
+                        style="width: 100px;"
+                        @change="(val) => handleUpdateMsgLimit('msgTtlDays', val)"
+                      >
+                        <a-option :value="0">永久保留</a-option>
+                        <a-option :value="3">3 天</a-option>
+                        <a-option :value="7">7 天</a-option>
+                        <a-option :value="30">30 天</a-option>
+                        <a-option :value="90">90 天</a-option>
+                      </a-select>
+                    </div>
+                  </div>
+                </div>
+                <div v-else-if="context === 'global' && cleanScope === 'all'" style="background: #1e1e1e; padding: 6px 10px; border-radius: 4px; font-size: 12px; color: #86909c; text-align: center; width: 100%;">
+                  “全部账号”模式下已合并统计，各项清理参数将依据各自账号的独立配置分别执行。
+                </div>
+                <div v-else style="background: #1e1e1e; padding: 6px 10px; border-radius: 4px; font-size: 12px; color: #86909c; text-align: center; width: 100%;">
+                  请先在“当前账号设置”中激活并登录一个在线或离线账号，以开启单会话超限与过期自动筛选管理。
+                </div>
               </div>
 
               <div class="store-item">
                 <div class="store-info">
                   <span class="name">会话列表 (conversations)</span>
                   <span class="count">
-                    <template v-if="isScanned.conversations">{{ cacheStats.convCount }} 条</template>
+                    <template v-if="isScanned.conversations">
+                      <span v-if="context === 'global' && cleanScope === 'all'">总计: </span>{{ cacheStats.convCount }} 条
+                    </template>
                     <template v-else>未扫描</template>
                   </span>
                 </div>
                 <a-space>
                   <a-button v-if="!isScanned.conversations" type="outline" size="mini" :loading="scanLoading.conversations" @click="handleScanSingle('conversations')">扫描</a-button>
-                  <a-popconfirm content="确定清空会话列表吗？" @ok="handleClearStore('conversations')">
+                  <a-popconfirm :content="context === 'global' && cleanScope === 'all' ? '确定清空所有账号的会话列表吗？' : '确定清空会话列表吗？'" @ok="handleClearStore('conversations')">
                     <a-button type="outline" size="mini" status="warning" :loading="clearLoading.conversations">清理</a-button>
-                  </a-popconfirm>
-                </a-space>
-              </div>
-
-              <div class="store-item">
-                <div class="store-info">
-                  <span class="name">图片/头像缓存 (Browser Cache)</span>
-                  <span class="count">
-                    <template v-if="isScanned.avatarCache">{{ cacheStats.avatarCacheSize }}</template>
-                    <template v-else>未扫描</template>
-                  </span>
-                </div>
-                <a-space>
-                  <a-button v-if="!isScanned.avatarCache" type="outline" size="mini" :loading="scanLoading.avatarCache" @click="handleScanSingle('avatarCache')">扫描</a-button>
-                  <a-popconfirm content="确定清空浏览器图片缓存吗？" @ok="handleClearAvatarCache">
-                    <a-button type="outline" size="mini" status="warning" :loading="clearLoading.avatarCache">清理</a-button>
                   </a-popconfirm>
                 </a-space>
               </div>
@@ -248,7 +295,7 @@
 
             <a-divider />
             
-            <a-popconfirm content="确定清空所有本地数据吗？" @ok="handleClearCache">
+            <a-popconfirm :content="context === 'global' && cleanScope === 'all' ? '确定清空系统所有账号的所有本地数据吗？（这无法撤销！）' : '确定清空所有本地数据吗？'" @ok="handleClearCache">
               <a-button type="primary" status="danger" long :loading="clearLoading.all">全部清空 (慎重)</a-button>
             </a-popconfirm>
           </div>
@@ -332,18 +379,6 @@
         <a-tab-pane v-if="context === 'global'" key="personal_global" title="全局个人设置">
           <a-form :model="accountStore.globalAvatarConfig" layout="vertical" style="margin-top: 15px;">
             <a-alert type="info" style="margin-bottom: 16px;">此处的设置将作为所有账号的默认值</a-alert>
-            <a-form-item label="默认头像下载">
-              <a-switch 
-                :model-value="accountStore.globalAvatarConfig.downloadEnabled" 
-                @update:model-value="(val: any) => accountStore.updateAvatarConfig({ downloadEnabled: val }, true)" 
-              />
-            </a-form-item>
-            <a-form-item label="默认头像缓存">
-              <a-switch 
-                :model-value="accountStore.globalAvatarConfig.cacheEnabled" 
-                @update:model-value="(val: any) => accountStore.updateAvatarConfig({ cacheEnabled: val }, true)" 
-              />
-            </a-form-item>
             <a-form-item label="默认 Redis 极速模式" help="开启后所有新账号默认使用 Redis 同步，跳过 IndexedDB">
               <a-switch 
                 :model-value="accountStore.globalAvatarConfig.isRedisLanMode" 
@@ -370,18 +405,6 @@
             <div style="margin-bottom: 16px; color: #07c160; font-weight: bold;">
               正在设置账号: {{ activeAccountNickname }}
             </div>
-            <a-form-item label="头像下载" help="关闭后将不自动尝试下载原始头像到本地">
-              <a-switch 
-                :model-value="accountStore.getEffectiveAvatarConfig().downloadEnabled" 
-                @update:model-value="(val: any) => accountStore.updateAvatarConfig({ downloadEnabled: val })" 
-              />
-            </a-form-item>
-            <a-form-item label="头像缓存" help="关闭后将仅使用原始网络链接，不从本地数据库读取/保存">
-              <a-switch 
-                :model-value="accountStore.getEffectiveAvatarConfig().cacheEnabled" 
-                @update:model-value="(val: any) => accountStore.updateAvatarConfig({ cacheEnabled: val })" 
-              />
-            </a-form-item>
             <a-divider>数据通道</a-divider>
             <a-form-item label="局域网 Redis 极速模式" help="开启后从原只读 Redis 快照极速获取数据，跳过 IndexedDB。如果配置了新 Redis 地址，则同步启用回写与读回机制。">
               <a-switch 
@@ -502,11 +525,11 @@ const loadAllMessagesLoading = ref(false);
 const cacheStats = ref({ 
   contactCount: 0, 
   msgCount: 0, 
+  expiredMsgCount: 0,
+  exceededMsgCount: 0,
   estimatedSize: '0 B', 
   actualSize: '0 B',
-  avatarCount: 0,
-  convCount: 0,
-  avatarCacheSize: '0 B'
+  convCount: 0
 });
 
 const isScanned = reactive({
@@ -514,9 +537,7 @@ const isScanned = reactive({
   actualSize: false,
   contacts: false,
   messages: false,
-  conversations: false,
-  avatars: false,
-  avatarCache: false
+  conversations: false
 });
 
 const scanLoading = reactive({
@@ -525,21 +546,47 @@ const scanLoading = reactive({
   actualSize: false,
   contacts: false,
   messages: false,
-  conversations: false,
-  avatars: false,
-  avatarCache: false
+  conversations: false
 });
 
 const clearLoading = reactive({
   all: false,
-  avatars: false,
   contacts: false,
   messages: false,
   groupMessages: false,
   officialMessages: false,
   conversations: false,
-  avatarCache: false
+  expiredMessages: false,
+  exceededMessages: false,
+  deepClean: false
 });
+
+const activeAccountConfig = computed(() => {
+  return accountStore.getEffectiveAvatarConfig(accountStore.activeAccountUuid);
+});
+
+const handleUpdateMsgLimit = (key: 'maxMessagesPerConv' | 'msgTtlDays', val: any) => {
+  accountStore.updateAvatarConfig({ [key]: Number(val) });
+  isScanned.messages = false;
+};
+
+const cleanScope = ref<'active' | 'all'>('active');
+
+const handleCleanScopeChange = () => {
+  // 重置扫描状态，避免展示过时的缓存数据
+  Object.keys(isScanned).forEach(k => {
+    (isScanned as any)[k] = false;
+  });
+  cacheStats.value = {
+    contactCount: 0,
+    msgCount: 0,
+    expiredMsgCount: 0,
+    exceededMsgCount: 0,
+    estimatedSize: '0 B',
+    actualSize: '0 B',
+    convCount: 0
+  };
+};
 
 // 内置控制台组件逻辑
 const logConsoleRef = ref<HTMLDivElement | null>(null);
@@ -592,12 +639,14 @@ const activeAccountNickname = computed(() => {
 watch(() => props.visible, (newVal) => {
   if (newVal) {
     activeAdminTab.value = props.context === 'personal' ? 'personal' : '1';
-    baseConfigForm.baseUrl = accountStore.baseUrl;
-    baseConfigForm.adminKey = accountStore.adminKey;
+    baseConfigForm.baseUrl = accountStore.isDemoMode ? '' : accountStore.baseUrl;
+    baseConfigForm.adminKey = accountStore.isDemoMode ? '' : accountStore.adminKey;
     
     // 初始化本地临时 Redis 地址，防止输入过程触发实时同步
-    tempGlobalRedisUrl.value = accountStore.globalAvatarConfig.redisWriteBackUrl || '';
-    tempPersonalRedisUrl.value = accountStore.getEffectiveAvatarConfig().redisWriteBackUrl || '';
+    tempGlobalRedisUrl.value = (accountStore.isDemoMode ? '' : (accountStore.globalAvatarConfig.redisWriteBackUrl || ''));
+    tempPersonalRedisUrl.value = (accountStore.isDemoMode ? '' : (accountStore.getEffectiveAvatarConfig().redisWriteBackUrl || ''));
+
+    cleanScope.value = 'active';
 
     // 重置扫描状态，避免打开时展示过时的缓存数据
     Object.keys(isScanned).forEach(k => {
@@ -612,6 +661,8 @@ watch(() => accountStore.activeAccountUuid, () => {
 });
 
 const handleSaveConfig = () => {
+  localStorage.removeItem('isDemoMode');
+  accountStore.isDemoMode = false;
   accountStore.setGlobalConfig(baseConfigForm.baseUrl, baseConfigForm.adminKey, accountStore.tokenKey, accountStore.debug);
   window.location.reload();
 };
@@ -774,33 +825,63 @@ const handleGetFriendList = async () => {
 // 一键扫描所有 IndexedDB 分表
 const handleScanAll = async () => {
   scanLoading.all = true;
-  const uuid = accountStore.activeAccountUuid && accountStore.activeAccountUuid !== 'pending_login' ? accountStore.activeAccountUuid : undefined;
   try {
-    const [c, m, v, a, est, act, avt] = await Promise.all([
+    const isAll = props.context === 'global' && cleanScope.value === 'all';
+    const uuid = !isAll && accountStore.activeAccountUuid && accountStore.activeAccountUuid !== 'pending_login' ? accountStore.activeAccountUuid : undefined;
+
+    const [c, m, v, est, act] = await Promise.all([
       contactCache.getCount('contacts', uuid),
       contactCache.getCount('messages', uuid),
       contactCache.getCount('conversations', uuid),
-      contactCache.getCount('avatars', uuid),
-      contactCache.getEstimatedSize(),
-      contactCache.getActualSize(),
-      contactCache.getAvatarCacheSize()
+      contactCache.getEstimatedSize(uuid),
+      contactCache.getActualSize()
     ]);
+
+    let expired = 0;
+    let exceeded = 0;
+
+    if (isAll) {
+      const accounts = accountStore.accounts.filter(a => a.uuid && a.uuid !== 'pending_login');
+      if (accounts.length > 0) {
+        const results = await Promise.all(
+          accounts.map(async (a) => {
+            const config = accountStore.getEffectiveAvatarConfig(a.uuid);
+            const [exp, exc] = await Promise.all([
+              contactCache.getExpiredCount(a.uuid, config.msgTtlDays || 0),
+              contactCache.getExceededCount(a.uuid, config.maxMessagesPerConv || 500)
+            ]);
+            return { exp, exc };
+          })
+        );
+        results.forEach(res => {
+          expired += res.exp;
+          exceeded += res.exc;
+        });
+      }
+    } else if (uuid) {
+      const config = accountStore.getEffectiveAvatarConfig(uuid);
+      const [exp, exc] = await Promise.all([
+        contactCache.getExpiredCount(uuid, config.msgTtlDays || 0),
+        contactCache.getExceededCount(uuid, config.maxMessagesPerConv || 500)
+      ]);
+      expired = exp;
+      exceeded = exc;
+    }
+
     cacheStats.value = {
       contactCount: c,
       msgCount: m,
       convCount: v,
-      avatarCount: a,
       estimatedSize: est,
       actualSize: act,
-      avatarCacheSize: avt
+      expiredMsgCount: expired,
+      exceededMsgCount: exceeded
     };
     isScanned.contacts = true;
     isScanned.messages = true;
     isScanned.conversations = true;
-    isScanned.avatars = true;
     isScanned.estimatedSize = true;
     isScanned.actualSize = true;
-    isScanned.avatarCache = true;
     Message.success('一键扫描完成');
   } catch (err: any) {
     Message.error('扫描失败: ' + err.message);
@@ -811,21 +892,46 @@ const handleScanAll = async () => {
 
 // 局部单项扫描
 const handleScanSingle = async (key: keyof typeof isScanned) => {
-  const uuid = accountStore.activeAccountUuid && accountStore.activeAccountUuid !== 'pending_login' ? accountStore.activeAccountUuid : undefined;
+  const isAll = props.context === 'global' && cleanScope.value === 'all';
+  const uuid = !isAll && accountStore.activeAccountUuid && accountStore.activeAccountUuid !== 'pending_login' ? accountStore.activeAccountUuid : undefined;
   scanLoading[key] = true;
   try {
     if (key === 'contacts') {
       cacheStats.value.contactCount = await contactCache.getCount('contacts', uuid);
     } else if (key === 'messages') {
-      cacheStats.value.msgCount = await contactCache.getCount('messages', uuid);
+      const msgCount = await contactCache.getCount('messages', uuid);
+      let expired = 0;
+      let exceeded = 0;
+      if (isAll) {
+        const accounts = accountStore.accounts.filter(a => a.uuid && a.uuid !== 'pending_login');
+        if (accounts.length > 0) {
+          const results = await Promise.all(
+            accounts.map(async (a) => {
+              const config = accountStore.getEffectiveAvatarConfig(a.uuid);
+              const [exp, exc] = await Promise.all([
+                contactCache.getExpiredCount(a.uuid, config.msgTtlDays || 0),
+                contactCache.getExceededCount(a.uuid, config.maxMessagesPerConv || 500)
+              ]);
+              return { exp, exc };
+            })
+          );
+          results.forEach(res => {
+            expired += res.exp;
+            exceeded += res.exc;
+          });
+        }
+      } else if (uuid) {
+        const config = accountStore.getEffectiveAvatarConfig(uuid);
+        expired = await contactCache.getExpiredCount(uuid, config.msgTtlDays || 0);
+        exceeded = await contactCache.getExceededCount(uuid, config.maxMessagesPerConv || 500);
+      }
+      cacheStats.value.msgCount = msgCount;
+      cacheStats.value.expiredMsgCount = expired;
+      cacheStats.value.exceededMsgCount = exceeded;
     } else if (key === 'conversations') {
       cacheStats.value.convCount = await contactCache.getCount('conversations', uuid);
-    } else if (key === 'avatars') {
-      cacheStats.value.avatarCount = await contactCache.getCount('avatars', uuid);
-    } else if (key === 'avatarCache') {
-      cacheStats.value.avatarCacheSize = await contactCache.getAvatarCacheSize();
     } else if (key === 'estimatedSize') {
-      cacheStats.value.estimatedSize = await contactCache.getEstimatedSize();
+      cacheStats.value.estimatedSize = await contactCache.getEstimatedSize(uuid);
     } else if (key === 'actualSize') {
       cacheStats.value.actualSize = await contactCache.getActualSize();
     }
@@ -838,27 +944,30 @@ const handleScanSingle = async (key: keyof typeof isScanned) => {
   }
 };
 
-const handleClearAvatarCache = async () => {
-  try {
-    clearLoading.avatarCache = true;
-    await contactCache.clearAvatarCache();
-    cacheStats.value.avatarCacheSize = '0 B';
-    isScanned.avatarCache = true;
-    Message.success('图片缓存已清空');
-  } catch (err: any) {
-    Message.error('清理图片缓存失败: ' + err.message);
-  } finally {
-    clearLoading.avatarCache = false;
-  }
-};
-
 const handleClearGroupMessages = async () => {
-  if (!accountStore.activeAccountUuid) return;
+  const isAll = props.context === 'global' && cleanScope.value === 'all';
+  
   try {
     clearLoading.groupMessages = true;
-    await chatStore.clearGroupMessages(accountStore.activeAccountUuid);
-    Message.success('群消息已清空');
-    // 如果已经扫描过了，自动重新扫描该项，确保界面数据实时一致
+    if (isAll) {
+      const accounts = accountStore.accounts.filter(a => a.uuid && a.uuid !== 'pending_login');
+      let totalDeleted = 0;
+      await Promise.all(
+        accounts.map(async (a) => {
+          const deletedCount = await contactCache.clearGroupMessages(a.uuid);
+          chatStore.clearMemoryAll(a.uuid);
+          totalDeleted += deletedCount;
+        })
+      );
+      Message.success(`所有账号的群消息已清空，共清理了 ${totalDeleted} 条消息`);
+    } else {
+      const uuid = accountStore.activeAccountUuid;
+      if (!uuid) return Message.warning('请先选择活跃账号');
+      await contactCache.clearGroupMessages(uuid);
+      chatStore.clearMemoryAll(uuid);
+      Message.success('当前账号群消息已清空');
+    }
+    
     if (isScanned.messages) {
       await handleScanSingle('messages');
     }
@@ -870,12 +979,29 @@ const handleClearGroupMessages = async () => {
 };
 
 const handleClearOfficialMessages = async () => {
-  if (!accountStore.activeAccountUuid) return;
+  const isAll = props.context === 'global' && cleanScope.value === 'all';
+  
   try {
     clearLoading.officialMessages = true;
-    await chatStore.clearOfficialMessages(accountStore.activeAccountUuid);
-    Message.success('公众号消息已清空');
-    // 如果已经扫描过了，自动重新扫描该项
+    if (isAll) {
+      const accounts = accountStore.accounts.filter(a => a.uuid && a.uuid !== 'pending_login');
+      let totalDeleted = 0;
+      await Promise.all(
+        accounts.map(async (a) => {
+          const deletedCount = await contactCache.clearOfficialMessages(a.uuid);
+          chatStore.clearMemoryAll(a.uuid);
+          totalDeleted += deletedCount;
+        })
+      );
+      Message.success(`所有账号的公众号消息已清空，共清理了 ${totalDeleted} 条消息`);
+    } else {
+      const uuid = accountStore.activeAccountUuid;
+      if (!uuid) return Message.warning('请先选择活跃账号');
+      await contactCache.clearOfficialMessages(uuid);
+      chatStore.clearMemoryAll(uuid);
+      Message.success('当前账号公众号消息已清空');
+    }
+    
     if (isScanned.messages) {
       await handleScanSingle('messages');
     }
@@ -885,9 +1011,179 @@ const handleClearOfficialMessages = async () => {
     clearLoading.officialMessages = false;
   }
 };
- 
+
+const handleClearExpired = async () => {
+  const isAll = props.context === 'global' && cleanScope.value === 'all';
+  
+  if (isAll) {
+    const accounts = accountStore.accounts.filter(a => a.uuid && a.uuid !== 'pending_login');
+    if (accounts.length === 0) return Message.warning('没有可清理的账号');
+    
+    try {
+      clearLoading.expiredMessages = true;
+      let totalDeleted = 0;
+      await Promise.all(
+        accounts.map(async (a) => {
+          const config = accountStore.getEffectiveAvatarConfig(a.uuid);
+          const ttlDays = config.msgTtlDays || 0;
+          if (ttlDays > 0) {
+            const count = await contactCache.pruneExpiredMessages(a.uuid, ttlDays);
+            chatStore.clearMemoryAll(a.uuid);
+            totalDeleted += count;
+          }
+        })
+      );
+      Message.success(`成功清理了全部账号共 ${totalDeleted} 条已过期的消息记录`);
+      if (isScanned.messages) {
+        await handleScanSingle('messages');
+      }
+    } catch (err: any) {
+      Message.error('清理过期消息失败: ' + err.message);
+    } finally {
+      clearLoading.expiredMessages = false;
+    }
+  } else {
+    const uuid = accountStore.activeAccountUuid;
+    if (!uuid || uuid === 'pending_login') return Message.warning('请先选择活跃账号');
+    
+    const config = accountStore.getEffectiveAvatarConfig(uuid);
+    const ttlDays = config.msgTtlDays || 0;
+    if (ttlDays <= 0) return Message.warning('当前账号未配置消息过期天数限制');
+
+    try {
+      clearLoading.expiredMessages = true;
+      const deletedCount = await contactCache.pruneExpiredMessages(uuid, ttlDays);
+      chatStore.clearMemoryAll(uuid);
+      Message.success(`成功清理了 ${deletedCount} 条已过期的消息记录`);
+      if (isScanned.messages) {
+        await handleScanSingle('messages');
+      }
+    } catch (err: any) {
+      Message.error('清理过期消息失败: ' + err.message);
+    } finally {
+      clearLoading.expiredMessages = false;
+    }
+  }
+};
+
+const handleClearExceeded = async () => {
+  const isAll = props.context === 'global' && cleanScope.value === 'all';
+  
+  if (isAll) {
+    const accounts = accountStore.accounts.filter(a => a.uuid && a.uuid !== 'pending_login');
+    if (accounts.length === 0) return Message.warning('没有可清理的账号');
+
+    try {
+      clearLoading.exceededMessages = true;
+      let totalDeleted = 0;
+      await Promise.all(
+        accounts.map(async (a) => {
+          const config = accountStore.getEffectiveAvatarConfig(a.uuid);
+          const maxMessages = config.maxMessagesPerConv || 500;
+          const count = await contactCache.pruneExceededMessages(a.uuid, maxMessages);
+          chatStore.clearMemoryAll(a.uuid);
+          totalDeleted += count;
+        })
+      );
+      Message.success(`成功清理了全部账号共 ${totalDeleted} 条超出单会话上限的消息记录`);
+      if (isScanned.messages) {
+        await handleScanSingle('messages');
+      }
+    } catch (err: any) {
+      Message.error('清理超限消息失败: ' + err.message);
+    } finally {
+      clearLoading.exceededMessages = false;
+    }
+  } else {
+    const uuid = accountStore.activeAccountUuid;
+    if (!uuid || uuid === 'pending_login') return Message.warning('请先选择活跃账号');
+
+    const config = accountStore.getEffectiveAvatarConfig(uuid);
+    const maxMessages = config.maxMessagesPerConv || 500;
+
+    try {
+      clearLoading.exceededMessages = true;
+      const deletedCount = await contactCache.pruneExceededMessages(uuid, maxMessages);
+      chatStore.clearMemoryAll(uuid);
+      Message.success(`成功清理了 ${deletedCount} 条超出单会话上限的消息记录`);
+      if (isScanned.messages) {
+        await handleScanSingle('messages');
+      }
+    } catch (err: any) {
+      Message.error('清理超限消息失败: ' + err.message);
+    } finally {
+      clearLoading.exceededMessages = false;
+    }
+  }
+};
+
+const handleDeepCleanAB = async () => {
+  const isAll = props.context === 'global' && cleanScope.value === 'all';
+
+  if (isAll) {
+    const accounts = accountStore.accounts.filter(a => a.uuid && a.uuid !== 'pending_login');
+    if (accounts.length === 0) return Message.warning('没有可清理的账号');
+
+    try {
+      clearLoading.deepClean = true;
+      let totalExpired = 0;
+      let totalExceeded = 0;
+      
+      await Promise.all(
+        accounts.map(async (a) => {
+          const config = accountStore.getEffectiveAvatarConfig(a.uuid);
+          const ttlDays = config.msgTtlDays || 0;
+          const maxMessages = config.maxMessagesPerConv || 500;
+          
+          const [expiredCount, exceededCount] = await Promise.all([
+            ttlDays > 0 ? contactCache.pruneExpiredMessages(a.uuid, ttlDays) : Promise.resolve(0),
+            contactCache.pruneExceededMessages(a.uuid, maxMessages)
+          ]);
+          chatStore.clearMemoryAll(a.uuid);
+          totalExpired += expiredCount;
+          totalExceeded += exceededCount;
+        })
+      );
+      
+      Message.success(`深度清理完成：共清理了全部账号 ${totalExpired + totalExceeded} 条消息 (过期: ${totalExpired} 条, 超限: ${totalExceeded} 条)`);
+      if (isScanned.messages) {
+        await handleScanSingle('messages');
+      }
+    } catch (err: any) {
+      Message.error('深度清理失败: ' + err.message);
+    } finally {
+      clearLoading.deepClean = false;
+    }
+  } else {
+    const uuid = accountStore.activeAccountUuid;
+    if (!uuid || uuid === 'pending_login') return Message.warning('请先选择活跃账号');
+
+    const config = accountStore.getEffectiveAvatarConfig(uuid);
+    const ttlDays = config.msgTtlDays || 0;
+    const maxMessages = config.maxMessagesPerConv || 500;
+
+    try {
+      clearLoading.deepClean = true;
+      const [expiredCount, exceededCount] = await Promise.all([
+        contactCache.pruneExpiredMessages(uuid, ttlDays),
+        contactCache.pruneExceededMessages(uuid, maxMessages)
+      ]);
+      chatStore.clearMemoryAll(uuid);
+      Message.success(`深度清理完成：共清理了 ${expiredCount + exceededCount} 条消息 (过期: ${expiredCount} 条, 超限: ${exceededCount} 条)`);
+      if (isScanned.messages) {
+        await handleScanSingle('messages');
+      }
+    } catch (err: any) {
+      Message.error('深度清理失败: ' + err.message);
+    } finally {
+      clearLoading.deepClean = false;
+    }
+  }
+};
+
 const handleClearStore = async (name: string) => {
-  const uuid = accountStore.activeAccountUuid && accountStore.activeAccountUuid !== 'pending_login' ? accountStore.activeAccountUuid : undefined;
+  const isAll = props.context === 'global' && cleanScope.value === 'all';
+  const uuid = !isAll && accountStore.activeAccountUuid && accountStore.activeAccountUuid !== 'pending_login' ? accountStore.activeAccountUuid : undefined;
 
   try {
     (clearLoading as any)[name] = true;
@@ -901,34 +1197,35 @@ const handleClearStore = async (name: string) => {
         chatStore.accountConversations[uuid] = [];
       } else if (name === 'contacts') {
         accountStore.accountContactMaps[uuid] = {};
-        accountStore.clearMemoryAll(uuid); // 清空内存中的去重/同步锁/时间/加载状态
+        accountStore.clearMemoryAll(uuid);
       }
     } else {
       if (name === 'messages') {
+        chatStore.accountMessages = {};
         chatStore.clearMemoryAll();
       } else if (name === 'conversations') {
         chatStore.accountConversations = {};
       } else if (name === 'contacts') {
+        accountStore.accountContactMaps = {};
         accountStore.clearMemoryAll();
       }
     }
 
     // 内存直接置 0 并设为已扫描，无须再次触发繁杂的全盘扫描
-    if (name === 'avatars') {
-      cacheStats.value.avatarCount = 0;
-      isScanned.avatars = true;
-    } else if (name === 'contacts') {
+    if (name === 'contacts') {
       cacheStats.value.contactCount = 0;
       isScanned.contacts = true;
     } else if (name === 'messages') {
       cacheStats.value.msgCount = 0;
+      cacheStats.value.expiredMsgCount = 0;
+      cacheStats.value.exceededMsgCount = 0;
       isScanned.messages = true;
     } else if (name === 'conversations') {
       cacheStats.value.convCount = 0;
       isScanned.conversations = true;
     }
 
-    Message.success(`已清空 ${uuid ? '当前账号 ' : ''}${name} 表`);
+    Message.success(`已清空 ${uuid ? '当前账号 ' : '全部账号的 '}${name} 表`);
   } catch (err: any) {
     Message.error('清理失败: ' + err.message);
   } finally {
@@ -937,7 +1234,8 @@ const handleClearStore = async (name: string) => {
 };
 
 const handleClearCache = async () => {
-  const uuid = accountStore.activeAccountUuid && accountStore.activeAccountUuid !== 'pending_login' ? accountStore.activeAccountUuid : undefined;
+  const isAll = props.context === 'global' && cleanScope.value === 'all';
+  const uuid = !isAll && accountStore.activeAccountUuid && accountStore.activeAccountUuid !== 'pending_login' ? accountStore.activeAccountUuid : undefined;
 
   try {
     clearLoading.all = true;
@@ -955,22 +1253,20 @@ const handleClearCache = async () => {
     cacheStats.value = {
       contactCount: 0,
       msgCount: 0,
+      expiredMsgCount: 0,
+      exceededMsgCount: 0,
       convCount: 0,
-      avatarCount: 0,
       estimatedSize: '0 B',
-      actualSize: '0 B',
-      avatarCacheSize: '0 B'
+      actualSize: '0 B'
     };
     
     isScanned.contacts = true;
     isScanned.messages = true;
     isScanned.conversations = true;
-    isScanned.avatars = true;
     isScanned.estimatedSize = true;
     isScanned.actualSize = true;
-    isScanned.avatarCache = true;
 
-    Message.success(`已清空${uuid ? '当前账号的' : '所有'}本地数据`);
+    Message.success(`已清空${uuid ? '当前账号的' : '系统内所有账号的'}本地数据`);
   } catch (err: any) {
     Message.error('全部清空失败: ' + err.message);
   } finally {

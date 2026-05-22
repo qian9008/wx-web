@@ -91,19 +91,48 @@ export const messageApi = {
   delContact: (license: string, username: string) => 
     request.post(`/friend/DelContact?key=${license}`, { DelUserName: username }),
 
-  getMsgBigImg: (license: string, fromUser: string, toUser: string, msgId: number) => 
-    request.post(`/message/GetMsgBigImg?key=${license}`, {
-      CompressType: 0,
+  getMsgBigImg: (license: string, fromUser: string, toUser: string, msgId: number, compressType = 0) => {
+    const payload = {
+      CompressType: compressType,
       FromUserName: fromUser,
       MsgId: msgId,
       Section: {
-        ClientMsgId: "",
-        DataLen: 0,
-        TotalLen: 0
+        DataLen: 61440,
+        StartPos: 0
       },
       ToUserName: toUser,
       TotalLen: 0
-    }),
+    };
+    console.log('[GetMsgBigImg] 实际请求体:', JSON.stringify(payload, null, 2));
+    return request.post(`/message/GetMsgBigImg?key=${license}`, payload);
+  },
+
+  getMsgVoice: (license: string, fromUser: string, toUser: string, bufId: string, length: number, newMsgId: string) => {
+    const payload = {
+      BufId: bufId,
+      FromUserName: fromUser,
+      Length: length,
+      NewMsgId: newMsgId,
+      ToUserName: toUser
+    };
+    console.log('[GetMsgVoice] 实际请求体:', JSON.stringify(payload, null, 2));
+    return request.post(`/message/GetMsgVoice?key=${license}`, payload);
+  },
+
+  sendCdnDownload: (license: string, aesKey: string, fileUrl: string, fileType = 4, fileSize = 0) => {
+    const payload: any = {
+      AesKey: aesKey,
+      FileType: fileType,
+      FileURL: fileUrl,
+    };
+    // 仅在 fileSize > 0 时传递大小信息
+    if (fileSize > 0) {
+      payload.TotalSize = fileSize;
+      payload.SrcSize = fileSize;
+    }
+    console.log('[SendCdnDownload] 实际请求体:', JSON.stringify(payload, null, 2));
+    return request.post(`/message/SendCdnDownload?key=${license}`, payload);
+  },
 
   // 获取 Redis 缓存的最近消息快照
   getRedisSyncMsg: (license: string) => 

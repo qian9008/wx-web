@@ -105,17 +105,32 @@ const handleSwitchAccount = async (uuid: string) => {
   if (accountStore.activeAccountUuid === uuid) return;
   pendingAccountUuid.value = uuid;
   
+  let targetUuid = uuid;
   try {
+    const acc = accountStore.accounts.find(a => a.uuid === uuid);
+    if (acc) {
+      if (!acc.initialized && acc.sessionKey) {
+        acc.initialized = true;
+        Message.info({
+          content: `正在开启并加载账户 [${acc.nickname}]...`,
+          duration: 2
+        });
+        await accountStore.fetchProfileAndFixUuid(acc.sessionKey);
+      }
+      targetUuid = acc.uuid; // fetchProfileAndFixUuid 可能会修正并在 store 中更新该账号的真实 uuid (wxid)
+    }
+
     // 🚀 核心控制：在切换 activeAccountUuid 之前，预先并行加载目标账号的联系人与会话缓存进入内存
     // 确保切换后所有依赖 activeAccountUuid 的 computed 属性能够直接同步且完美地加载渲染，杜绝 UI 抖动与临时降级 placeholder 的尴尬
     await Promise.all([
-      accountStore.loadContactsFromCache(uuid),
-      chatStore.loadConversations(uuid)
+      accountStore.loadContactsFromCache(targetUuid),
+      chatStore.loadConversations(targetUuid)
     ]);
   } catch (err) {
     console.warn('[Home] 切换账号时预加载缓存失败:', err);
   } finally {
-    accountStore.activeAccountUuid = uuid;
+    const acc = accountStore.accounts.find(a => a.uuid === uuid || a.uuid === targetUuid);
+    accountStore.activeAccountUuid = acc ? acc.uuid : targetUuid;
     pendingAccountUuid.value = '';
     // 自动重置当前聊天，防跨账号会话串屏
     chatStore.activeId = '';
@@ -286,19 +301,76 @@ const handleSendMessage = async (text: string) => {
   const acc = accountStore.accounts.find(a => a.uuid === userName);
   if (!acc || !partnerId) return;
 
+  const nowSec = Math.floor(Date.now() / 1000);
+  const msgObj = {
+    id: String(Date.now()),
+    msgId: Date.now(),
+    from: userName,
+    to: partnerId,
+    time: nowSec,
+    type: 'text',
+    content: text,
+    isSelf: true,
+    isRevoked: false
+  };
+
+  if (accountStore.isDemoMode) {
+    // 乐观更新内存消息
+    await chatStore.addParsedMessage(userName, msgObj);
+    
+    // 仿真 1 秒延迟自动回复
+    setTimeout(async () => {
+      let replyContent = '';
+      const replyFrom = partnerId;
+      
+      if (partnerId === 'mock_user_a') {
+        replyContent = `收到您发来的：“${text}”，这就是 IWE 的全内存高流畅度演示！所有操作完全在内存沙箱中进行，切换多账号也是秒开，非常丝滑！`;
+      } else if (partnerId === 'mock_user_b') {
+        replyContent = `收到：“${text}”。防撤回拦截简直是群控利器！我刚才故意撤回了一条关于“机密信息”的消息，你看我的会话里是不是被强力拦截并以红色斜体标记为 [已撤回(拦截)] 了？你在常规微信里是绝对看不到的！`;
+      } else if (partnerId === 'mock_group_c') {
+        replyContent = `王五 (UI/UX设计师)：大家快看，小明刚才说：“${text}”。\n\n赵六 (研发总监)：收到！在 500 人大群里，IWE 的流式多账号同步性能依然能够稳定在满帧运行，这主要得益于我们先连后补的 WebSocket 去重算法。`;
+      } else if (partnerId === 'filehelper') {
+        replyContent = `【IWE 传输助手回执】已接收到您的临时备忘：“${text}”。\n\n[系统备忘] 内存日志已安全写入临时缓存。`;
+      } else if (partnerId === 'gh_official_a') {
+        replyContent = `【自动回复】感谢关注 IWE 官方发布！当前处于完全离线的 DEMO 体验模式下，您发送的“${text}”已被内存模拟服务接收。如需体验真实线上多开，请随时点击左下角齿轮在设置中配置真实服务器和 Key！`;
+      } else {
+        replyContent = `【Demo 自动应答】已接收到您的消息：“${text}”。在 Demo 模式下，系统通过前端内存沙箱进行完美闭环仿真。`;
+      }
+
+      if (partnerId === 'mock_group_c') {
+        // 群聊仿真
+        await chatStore.addParsedMessage(userName, {
+          id: String(Date.now() + 1),
+          msgId: Date.now() + 1,
+          from: 'mock_user_d', // UI设计师 王五
+          to: 'mock_group_c',
+          time: Math.floor(Date.now() / 1000),
+          type: 'text',
+          content: `王五：收到小明发送的“${text}”。多开主控室能做到多账号并发真是强悍！`,
+          isSelf: false,
+          isRevoked: false
+        });
+      } else {
+        await chatStore.addParsedMessage(userName, {
+          id: String(Date.now() + 2),
+          msgId: Date.now() + 2,
+          from: replyFrom,
+          to: userName,
+          time: Math.floor(Date.now() / 1000),
+          type: 'text',
+          content: replyContent,
+          isSelf: false,
+          isRevoked: false
+        });
+      }
+    }, 1000);
+    
+    return;
+  }
+
   try {
     await messageApi.sendText(acc.sessionKey, partnerId, text);
-    chatStore.addParsedMessage(userName, {
-      id: String(Date.now()),
-      msgId: Date.now(),
-      from: userName,
-      to: partnerId,
-      time: Math.floor(Date.now() / 1000),
-      type: 'text',
-      content: text,
-      isSelf: true,
-      isRevoked: false
-    });
+    chatStore.addParsedMessage(userName, msgObj);
   } catch (err) {
     Message.error('发送失败');
   }

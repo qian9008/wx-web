@@ -19,10 +19,22 @@ export interface AppMessage {
     lastMessageSvrId: string;
     msgCreateTime: number;
   };
+  voiceBufId?: string;
+  voiceLength?: number;
+  voiceUrl?: string;
+  voiceAesKey?: string;
+  voiceCdnUrl?: string;
+  voiceFormat?: number;
+  voiceBuffer?: string; // img_buf.buffer base64 (已内嵌在 WS 消息中的裸 SILK 数据)
 }
 
 export class MessageParser {
   private static parser = new DOMParser();
+
+  private static getCleanXml(content: string): string {
+    const idx = content.indexOf('<');
+    return idx !== -1 ? content.slice(idx) : content;
+  }
 
   public static parse(rawMsg: any, myWxid: string): AppMessage {
     // 兼容两种命名格式：FromUserName (HTTP) vs from_user_name (WS)
@@ -67,10 +79,11 @@ export class MessageParser {
     // --- 特征检测：识别并过滤掉协议层的 XML 状态消息 ---
     // 如果内容包含 <msg><op 或 <voipinvitemsg 等特征，通常是协议控制消息
     const trimmedContent = content.trim();
-    if (trimmedContent.startsWith('<msg>') && trimmedContent.includes('<op')) {
+    if (trimmedContent.includes('<msg>') && trimmedContent.includes('<op')) {
       msg.type = 'status_notify';
       try {
-        const doc = this.parser.parseFromString(trimmedContent, 'text/xml');
+        const cleanXml = this.getCleanXml(trimmedContent);
+        const doc = this.parser.parseFromString(cleanXml, 'text/xml');
         const opNode = doc.querySelector('op');
         if (opNode) {
           const username = doc.querySelector('username')?.textContent || '';
@@ -103,7 +116,8 @@ export class MessageParser {
       // 尝试解析图片 XML 提取 URL
       if (content.includes('<img')) {
         try {
-          const doc = this.parser.parseFromString(content, 'text/xml');
+          const cleanXml = this.getCleanXml(content);
+          const doc = this.parser.parseFromString(cleanXml, 'text/xml');
           const imgNode = doc.querySelector('img');
           if (imgNode) {
             // 尝试提取 cdnmidimgurl 或 cdnthumburl
@@ -126,6 +140,42 @@ export class MessageParser {
     else if (msgType === 34) {
       msg.type = 'voice';
       msg.content = '[语音]';
+      console.log('[Parser] 语音消息原始 content:', content);
+      
+      if (content.includes('<voicemsg')) {
+        try {
+          const cleanXml = this.getCleanXml(content);
+          const doc = this.parser.parseFromString(cleanXml, 'text/xml');
+          const voiceNode = doc.querySelector('voicemsg');
+          if (voiceNode) {
+            const bufid = voiceNode.getAttribute('bufid');
+            const length = voiceNode.getAttribute('length');
+            const voicelength = voiceNode.getAttribute('voicelength'); // duration in ms
+            const aeskey = voiceNode.getAttribute('aeskey');
+            const voiceurl = voiceNode.getAttribute('voiceurl');
+            const voiceformat = voiceNode.getAttribute('voiceformat');
+            
+            if (bufid) msg.voiceBufId = bufid;
+            if (length) msg.voiceLength = Number(length);
+            if (aeskey) msg.voiceAesKey = aeskey;
+            if (voiceurl) msg.voiceCdnUrl = voiceurl;
+            if (voiceformat) msg.voiceFormat = Number(voiceformat);
+            
+            if (voicelength) {
+              const seconds = Math.round(Number(voicelength) / 1000) || 1;
+              msg.content = `[语音 ${seconds}"]`;
+            }
+          }
+        } catch (e) {
+          console.warn('[Parser] 语音 XML 解析失败', e);
+        }
+      }
+
+      // 提取内嵌语音数据（WS 实时消息的 img_buf.buffer 字段）
+      const imgBuf = rawMsg.img_buf || rawMsg.ImgBuf;
+      if (imgBuf?.buffer && typeof imgBuf.buffer === 'string' && imgBuf.buffer.length > 10) {
+        msg.voiceBuffer = imgBuf.buffer;
+      }
     }
     else if (msgType === 43) {
       msg.type = 'video';
@@ -147,7 +197,8 @@ export class MessageParser {
     }
     else if (msgType === 49 || msgType === 47) {
       try {
-        const doc = this.parser.parseFromString(content, 'text/xml');
+        const cleanXml = this.getCleanXml(content);
+        const doc = this.parser.parseFromString(cleanXml, 'text/xml');
         const title = doc.querySelector('title')?.textContent;
         const type = doc.querySelector('type')?.textContent; // 49 协议内部的真正类型
         

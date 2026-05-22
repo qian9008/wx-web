@@ -126,11 +126,12 @@ export const contactCache = {
   },
 
   // --- 消息相关 ---
-  async saveMessage(accountUuid: string, msg: any) {
+  // --- 消息相关 ---
+  async saveMessage(accountUuid: string, msg: any, maxMessagesPerConv = 500) {
     const db = await this.init();
     return new Promise<void>(async (resolve) => {
-      // Fix #9: 写入前检查该会话消息数，超过上限则淘汰最旧的
-      await this._pruneMessages(db, accountUuid, msg.partnerId);
+      // 写入前检查该会话消息数，超过上限则淘汰最旧的
+      await this._pruneMessages(db, accountUuid, msg.partnerId, maxMessagesPerConv);
 
       const transaction = db.transaction(MSG_STORE, 'readwrite');
       const store = transaction.objectStore(MSG_STORE);
@@ -143,8 +144,8 @@ export const contactCache = {
     });
   },
 
-  // Fix #9: FIFO 淘汰旧消息，保持每会话不超过 MAX_MESSAGES_PER_CONV 条
-  async _pruneMessages(db: IDBDatabase, accountUuid: string, partnerId: string) {
+  // FIFO 淘汰旧消息，保持每会话不超过 maxMessagesPerConv 条
+  async _pruneMessages(db: IDBDatabase, accountUuid: string, partnerId: string, maxMessagesPerConv = 500) {
     return new Promise<void>((resolve) => {
       const transaction = db.transaction(MSG_STORE, 'readwrite');
       const store = transaction.objectStore(MSG_STORE);
@@ -153,18 +154,139 @@ export const contactCache = {
 
       request.onsuccess = () => {
         const all: any[] = request.result || [];
-        if (all.length < MAX_MESSAGES_PER_CONV) {
+        if (all.length < maxMessagesPerConv) {
           resolve();
           return;
         }
-        // 按时间排序，删除最旧的 (all.length - MAX_MESSAGES_PER_CONV + 1) 条
+        // 按时间排序，删除最旧的 (all.length - maxMessagesPerConv + 1) 条
         all.sort((a, b) => a.time - b.time);
-        const toDelete = all.slice(0, all.length - MAX_MESSAGES_PER_CONV + 1);
+        const toDelete = all.slice(0, all.length - maxMessagesPerConv + 1);
         toDelete.forEach(m => store.delete(m.id));
         transaction.oncomplete = () => resolve();
       };
       request.onerror = () => resolve(); // 剪枝失败不阻塞写入
     });
+  },
+
+  // 统计已过期消息数
+  async getExpiredCount(accountUuid: string, ttlDays: number): Promise<number> {
+    if (!ttlDays || ttlDays <= 0) return 0;
+    const db = await this.init();
+    const expireTime = Date.now() - ttlDays * 24 * 60 * 60 * 1000;
+    return new Promise<number>((resolve) => {
+      const transaction = db.transaction(MSG_STORE, 'readonly');
+      const store = transaction.objectStore(MSG_STORE);
+      const index = store.index('time');
+      const request = index.openCursor(IDBKeyRange.upperBound(expireTime));
+      let count = 0;
+      request.onsuccess = (e: any) => {
+        const cursor = e.target.result;
+        if (cursor) {
+          const msg = cursor.value;
+          if (msg.accountUuid === accountUuid) {
+            count++;
+          }
+          cursor.continue();
+        } else {
+          resolve(count);
+        }
+      };
+      request.onerror = () => resolve(0);
+    });
+  },
+
+  // 统计超限消息数
+  async getExceededCount(accountUuid: string, maxMessagesPerConv: number): Promise<number> {
+    const db = await this.init();
+    const conversations = await this.getConversations(accountUuid);
+    if (conversations.length === 0) return 0;
+
+    return new Promise<number>((resolve) => {
+      const transaction = db.transaction(MSG_STORE, 'readonly');
+      const store = transaction.objectStore(MSG_STORE);
+      const index = store.index('account_partner');
+      let exceededCount = 0;
+      let pending = conversations.length;
+
+      conversations.forEach(conv => {
+        const request = index.count(IDBKeyRange.only([accountUuid, conv.wxid]));
+        request.onsuccess = () => {
+          const count = request.result;
+          if (count > maxMessagesPerConv) {
+            exceededCount += (count - maxMessagesPerConv);
+          }
+          pending--;
+          if (pending === 0) {
+            resolve(exceededCount);
+          }
+        };
+        request.onerror = () => {
+          pending--;
+          if (pending === 0) {
+            resolve(exceededCount);
+          }
+        };
+      });
+    });
+  },
+
+  // 清理过期消息
+  async pruneExpiredMessages(accountUuid: string, ttlDays: number): Promise<number> {
+    if (!ttlDays || ttlDays <= 0) return 0;
+    const db = await this.init();
+    const expireTime = Date.now() - ttlDays * 24 * 60 * 60 * 1000;
+    return new Promise<number>((resolve) => {
+      const transaction = db.transaction(MSG_STORE, 'readwrite');
+      const store = transaction.objectStore(MSG_STORE);
+      const index = store.index('time');
+      const request = index.openCursor(IDBKeyRange.upperBound(expireTime));
+      let deletedCount = 0;
+      request.onsuccess = (e: any) => {
+        const cursor = e.target.result;
+        if (cursor) {
+          const msg = cursor.value;
+          if (msg.accountUuid === accountUuid) {
+            cursor.delete();
+            deletedCount++;
+          }
+          cursor.continue();
+        }
+      };
+      transaction.oncomplete = () => resolve(deletedCount);
+      transaction.onerror = () => resolve(0);
+    });
+  },
+
+  // 清理超限消息
+  async pruneExceededMessages(accountUuid: string, maxMessagesPerConv: number): Promise<number> {
+    const db = await this.init();
+    const conversations = await this.getConversations(accountUuid);
+    if (conversations.length === 0) return 0;
+    let totalDeleted = 0;
+
+    for (const conv of conversations) {
+      const deletedCount = await new Promise<number>((resolve) => {
+        const transaction = db.transaction(MSG_STORE, 'readwrite');
+        const store = transaction.objectStore(MSG_STORE);
+        const index = store.index('account_partner');
+        const request = index.getAll(IDBKeyRange.only([accountUuid, conv.wxid]));
+
+        request.onsuccess = () => {
+          const all: any[] = request.result || [];
+          if (all.length <= maxMessagesPerConv) {
+            resolve(0);
+            return;
+          }
+          all.sort((a, b) => a.time - b.time);
+          const toDelete = all.slice(0, all.length - maxMessagesPerConv);
+          toDelete.forEach(m => store.delete(m.id));
+          transaction.oncomplete = () => resolve(toDelete.length);
+        };
+        request.onerror = () => resolve(0);
+      });
+      totalDeleted += deletedCount;
+    }
+    return totalDeleted;
   },
 
   // Fix #4: 删除 fallback 全表扫描
@@ -318,34 +440,6 @@ export const contactCache = {
     }
   },
 
-  async getAvatarCacheSize(): Promise<string> {
-    if (!window.caches) return '0 B';
-    try {
-      const cacheNames = await window.caches.keys();
-      let totalSize = 0;
-      for (const name of cacheNames) {
-        const cache = await window.caches.open(name);
-        const keys = await cache.keys();
-        for (const key of keys) {
-          const response = await cache.match(key);
-          if (response) {
-            const blob = await response.blob();
-            totalSize += blob.size;
-          }
-        }
-      }
-      return this.formatSize(totalSize);
-    } catch (e) {
-      return '无法计算';
-    }
-  },
-
-  async clearAvatarCache() {
-    if (!window.caches) return true;
-    const names = await window.caches.keys();
-    await Promise.all(names.map(name => window.caches.delete(name)));
-    return true;
-  },
 
   formatSize(sizeInBytes: number): string {
     if (sizeInBytes < 1024) return `${sizeInBytes} B`;
@@ -510,75 +604,4 @@ export const contactCache = {
     }
   },
 
-  async saveAvatar(url: string, blob: Blob) {
-    const db = await this.init();
-    return new Promise((resolve) => {
-      const transaction = db.transaction(AVATAR_STORE, 'readwrite');
-      const store = transaction.objectStore(AVATAR_STORE);
-      store.put({ url, blob, timestamp: Date.now() });
-      transaction.oncomplete = () => resolve(true);
-    });
-  },
-
-  async getAvatar(url: string): Promise<Blob | null> {
-    const db = await this.init();
-    return new Promise((resolve) => {
-      const transaction = db.transaction(AVATAR_STORE, 'readonly'); // 🚀 优化：只读事务，极速读取，不锁数据库
-      const store = transaction.objectStore(AVATAR_STORE);
-      const request = store.get(url);
-      
-      request.onsuccess = () => {
-        const result = request.result;
-        if (!result) {
-          resolve(null);
-          return;
-        }
-
-        const now = Date.now();
-        const isExpired = now - result.timestamp > AVATAR_TTL;
-
-        if (isExpired) {
-          if (isDebug('cache')) {
-            console.log(`[Cache] 头像缓存已过期 (30天): ${url}`);
-          }
-          // 🚀 优化：后台异步起写事务删除，不阻塞当前读取返回
-          this._deleteAvatar(url);
-          resolve(null);
-        } else {
-          // 🚀 优化：设置 24 小时“写阀值”。只有距离上次更新超过 1 天时，才在后台异步起写事务更新时间戳！
-          // 这能彻底避免同个列表频繁滚动、重复点开时对硬盘造成的频繁写操作，将写 I/O 降低 99.9% 以上！
-          const ONE_DAY = 24 * 60 * 60 * 1000;
-          if (now - (result.timestamp || 0) > ONE_DAY) {
-            this._renewAvatar(url, result);
-          }
-          resolve(result.blob);
-        }
-      };
-      
-      request.onerror = () => resolve(null);
-    });
-  },
-
-  // 内部辅助方法：后台异步删除
-  async _deleteAvatar(url: string) {
-    try {
-      const db = await this.init();
-      const transaction = db.transaction(AVATAR_STORE, 'readwrite');
-      transaction.objectStore(AVATAR_STORE).delete(url);
-    } catch (e) {
-      console.warn('[Cache] 异步删除头像失败:', e);
-    }
-  },
-
-  // 内部辅助方法：后台异步续期
-  async _renewAvatar(url: string, record: any) {
-    try {
-      const db = await this.init();
-      const transaction = db.transaction(AVATAR_STORE, 'readwrite');
-      record.timestamp = Date.now();
-      transaction.objectStore(AVATAR_STORE).put(record);
-    } catch (e) {
-      console.warn('[Cache] 异步续期头像失败:', e);
-    }
-  }
 };

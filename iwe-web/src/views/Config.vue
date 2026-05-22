@@ -35,6 +35,13 @@
           <a-button type="primary" html-type="submit" :loading="loading" long size="large" class="glow-btn">
             {{ loginMode === 'admin' ? '验证管理身份' : '进入个人终端' }}
           </a-button>
+          
+          <div class="demo-card-container">
+            <div class="demo-glass-card" @click="enterDemoMode">
+              <span class="demo-glow-text">进入 DEMO 体验模式</span>
+              <p class="demo-desc">秒级免扫码，零部署体验全套高阶功能</p>
+            </div>
+          </div>
         </a-form>
       </div>
 
@@ -145,8 +152,26 @@ const saveBaseConfig = () => {
   return newDebugConfig;
 };
 
+const enterDemoMode = async () => {
+  localStorage.setItem('isDemoMode', 'true');
+  
+  accountStore.isDemoMode = true;
+  
+  await accountStore.syncAccountsFromServer();
+  
+  Message.success({
+    content: '已成功开启 DEMO 演示体验模式！',
+    duration: 3
+  });
+  
+  router.replace('/');
+};
+
 const handleVerify = async () => {
   if (!form.baseUrl) return Message.warning('请填写服务器地址');
+  
+  localStorage.removeItem('isDemoMode');
+  accountStore.isDemoMode = false;
   
   const debugConfig = saveBaseConfig();
 
@@ -557,5 +582,45 @@ const logoutAdmin = () => {
   .glow-text {
     font-size: 24px;
   }
+}
+
+/* DEMO 体验卡片 */
+.demo-card-container {
+  margin-top: 16px;
+}
+
+.demo-glass-card {
+  padding: 14px 20px;
+  background: rgba(20, 201, 190, 0.05);
+  border: 1px dashed rgba(20, 201, 190, 0.25);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+  box-shadow: 0 0 10px rgba(20, 201, 190, 0.05);
+}
+
+.demo-glass-card:hover {
+  background: rgba(20, 201, 190, 0.12);
+  border-color: rgba(20, 201, 190, 0.6);
+  box-shadow: 0 0 20px rgba(20, 201, 190, 0.25);
+  transform: translateY(-1px);
+}
+
+.demo-glow-text {
+  font-size: 15px;
+  font-weight: 600;
+  color: #14c9c9;
+  text-shadow: 0 0 12px rgba(20, 201, 190, 0.35);
+  letter-spacing: 0.5px;
+  display: block;
+}
+
+.demo-desc {
+  margin: 4px 0 0 0;
+  font-size: 11px;
+  color: #86909c;
 }
 </style>

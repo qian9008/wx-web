@@ -1,31 +1,44 @@
 import { defineStore } from 'pinia';
-import { adminApi } from '@/api/modules/admin';
-import { loginApi, messageApi } from '@/api/modules/im';
-import { socketManager } from '@/utils/socketManager';
-import { contactCache } from '@/utils/contactCache';
 import { useChatStore } from './chat';
-import request from '@/utils/request';
-import { isDebug, syncDebugConfig } from '@/utils/debug';
-import { Message } from '@arco-design/web-vue';
+import { syncDebugConfig } from '@/utils/debug';
 
-// 模块级防抖定时器
-let redisSyncDebounceTimer: any = null;
-let redisWritebackDebounceTimer: any = null;
+// 引入垂直业务外部解耦模块
+import {
+  extractAvatarString,
+  getAvatarUrl,
+  getContactAvatar,
+  getAccountAvatar
+} from './account/utils';
 
-const extractAvatarString = (obj: any): string => {
-  if (!obj) return '';
-  if (typeof obj === 'string') return obj;
-  if (typeof obj === 'object') {
-    if (obj.str && typeof obj.str === 'string') return obj.str;
-    if (obj.Str && typeof obj.Str === 'string') return obj.Str;
-    if (obj.Url && typeof obj.Url === 'string') return obj.Url;
-    if (obj.url && typeof obj.url === 'string') return obj.url;
-    if (obj.Val && typeof obj.Val === 'string') return obj.Val;
-    if (obj.val && typeof obj.val === 'string') return obj.val;
-  }
-  return '';
-};
+import {
+  autoSave62Data,
+  syncAccountsFromServer,
+  checkSingleAccountStatus,
+  fetchProfileAndFixUuid,
+  preloadOfflineAccountAvatars,
+  getEffectiveAvatarConfig,
+  isRedisMode,
+  resolveRedisUrl
+} from './account/profile';
 
+import {
+  loadContactsFromCache,
+  updateContact,
+  checkFriendRelation,
+  forceUpdateContactDetails,
+  deleteContact,
+  syncFullContactList,
+  enqueueContactDetails,
+  processDetailsQueue
+} from './account/contacts';
+
+import {
+  fillContactsFromRedis,
+  syncViaRedis,
+  triggerDebouncedRedisSync,
+  triggerDebouncedRedisWriteback,
+  saveAllContactsToRedis
+} from './account/redis';
 
 interface Account {
   uuid: string;
@@ -34,6 +47,7 @@ interface Account {
   avatar: string;
   status: 'online' | 'offline';
   alias?: string;
+  initialized?: boolean;
 }
 
 interface DebugConfig {
@@ -46,17 +60,21 @@ interface DebugConfig {
 interface AvatarConfig {
   downloadEnabled: boolean;
   cacheEnabled: boolean;
-  isRedisLanMode: boolean; // 局域网 Redis 极速模式：跳过 IndexedDB，从 Redis 快照直接填充内存
+  isRedisLanMode: boolean;
   redisWriteBackUrl?: string;
+  maxMessagesPerConv?: number;
+  msgTtlDays?: number;
 }
 
 export const useAccountStore = defineStore('account', {
-  state: () => ({
-    // 统一键名
-    adminKey: localStorage.getItem('ADMIN_KEY') || '',
-    tokenKey: localStorage.getItem('TOKEN_KEY') || '',
-    baseUrl: localStorage.getItem('baseUrl') || localStorage.getItem('iwe_base_url') || '',
-    debug: (() => {
+  state: () => {
+    const isDemoMode = localStorage.getItem('isDemoMode') === 'true';
+    return {
+      isDemoMode,
+      adminKey: isDemoMode ? '' : (localStorage.getItem('ADMIN_KEY') || ''),
+      tokenKey: isDemoMode ? '' : (localStorage.getItem('TOKEN_KEY') || ''),
+      baseUrl: isDemoMode ? '' : (localStorage.getItem('baseUrl') || localStorage.getItem('iwe_base_url') || ''),
+      debug: (() => {
       try {
         const config = JSON.parse(localStorage.getItem('debug_config') || '{}');
         return {
@@ -69,7 +87,6 @@ export const useAccountStore = defineStore('account', {
         return { all: false, request: false, socket: false, cache: false };
       }
     })() as DebugConfig,
-    // 全局默认配置
     globalAvatarConfig: (() => {
       try {
         const config = JSON.parse(localStorage.getItem('avatar_config') || '{}');
@@ -77,13 +94,14 @@ export const useAccountStore = defineStore('account', {
           downloadEnabled: config.downloadEnabled !== false,
           cacheEnabled: config.cacheEnabled !== false,
           isRedisLanMode: config.isRedisLanMode !== false,
-          redisWriteBackUrl: config.redisWriteBackUrl || ''
+          redisWriteBackUrl: config.redisWriteBackUrl || '',
+          maxMessagesPerConv: config.maxMessagesPerConv !== undefined ? Number(config.maxMessagesPerConv) : 500,
+          msgTtlDays: config.msgTtlDays !== undefined ? Number(config.msgTtlDays) : 0
         };
       } catch (e) {
-        return { downloadEnabled: true, cacheEnabled: true, isRedisLanMode: true, redisWriteBackUrl: '' };
+        return { downloadEnabled: true, cacheEnabled: true, isRedisLanMode: true, redisWriteBackUrl: '', maxMessagesPerConv: 500, msgTtlDays: 0 };
       }
     })() as AvatarConfig,
-    // 账号独立配置：uuid -> AvatarConfig
     accountConfigs: (() => {
       try {
         return JSON.parse(localStorage.getItem('account_avatar_configs') || '{}');
@@ -93,35 +111,33 @@ export const useAccountStore = defineStore('account', {
     })() as Record<string, AvatarConfig>,
     accounts: [] as Account[],
     activeAccountUuid: '',
-    
-    // 详情补全请求队列
     detailsQueue: [] as string[],
     isProcessingQueue: false,
-    
-    // 同步控制：accountUuid -> timestamp
     lastSyncTimeMap: {} as Record<string, number>,
-    // 同步锁：防止同一账号并发同步
     syncLockMap: {} as Record<string, boolean>,
-
-    // 内存镜像：{ [accountUuid]: { [wxid]: contactDetail } }
     accountContactMaps: {} as Record<string, Record<string, any>>,
-    
-    // 账号联系人是否已完全从 Redis/缓存中加载完毕的标记：uuid -> boolean
     isContactListLoadedMap: {} as Record<string, boolean>,
-    
-    // 兼容性计算属性：获取当前活跃账号的联系人 Map
-    get contactMap(): Record<string, any> {
-      return this.accountContactMaps[this.activeAccountUuid] || {};
-    },
-    // 头像 Blob URL 缓存：url -> blobUrl
     avatarBlobMap: {} as Record<string, string>,
     _statusTimer: null as any
-  }),
+    };
+  },
+
+  getters: {
+    contactMap(state): Record<string, any> {
+      return state.accountContactMaps[state.activeAccountUuid] || {};
+    }
+  },
 
   actions: {
+    // 1. 静态数据延迟懒加载模块
+    async loadDemoData() {
+      const chatStore = useChatStore();
+      const { populateDemoData } = await import('./demoMockData');
+      populateDemoData(this, chatStore);
+    },
+
+    // 2. 轮询及管理代理
     startStatusPolling() {
-      // 🚀 响应最新需求：全局不再使用 30s 定时状态轮询，避免高频冗余接口请求
-      // 离线判断已改为由 WebSocket 断开事件即时触发；上线判断已改为由用户手动点击状态波纹点触发。
       if (this._statusTimer) {
         clearInterval(this._statusTimer);
         this._statusTimer = null;
@@ -134,55 +150,7 @@ export const useAccountStore = defineStore('account', {
       }
     },
     async autoSave62Data(license: string) {
-      if (!license) return;
-
-      const matchedAcc = this.accounts.find(a => a.sessionKey === license);
-      const uuid = matchedAcc?.uuid;
-      const isOnline = matchedAcc?.status === 'online';
-
-      // 离线时无法获取 62 数据，直接返回以避免失败的重复请求
-      if (!isOnline) {
-        return;
-      }
-
-      // 只有冷启动且该账户本地没有 62 数据时，才自动请求保存一份，避免重复请求
-      const hasLocalData = localStorage.getItem(`wx_62_data_${license}`) || 
-                           (uuid && localStorage.getItem(`wx_62_data_${uuid}`));
-
-      if (hasLocalData) {
-        if (this.debug.all || this.debug.cache) {
-          console.log(`[AccountStore] 账号 ${uuid || license.substring(0, 8)} 已有本地 62 数据，跳过冷启动自动保存。`);
-        }
-        return;
-      }
-
-      try {
-        console.log('[AccountStore] 冷启动触发自动提取并保存62数据...');
-        const res: any = await loginApi.get62Data(license);
-        let dataVal: any = '';
-        if (res) {
-          if (typeof res === 'string') {
-            dataVal = res;
-          } else if (typeof res === 'object') {
-            dataVal = res.Data || res.data || '';
-            if (dataVal && typeof dataVal === 'object') {
-              dataVal = dataVal.data || dataVal.Data || JSON.stringify(dataVal);
-            } else if (!dataVal) {
-              dataVal = JSON.stringify(res);
-            }
-          }
-        }
-        if (dataVal) {
-          localStorage.setItem(`wx_62_data_${license}`, dataVal);
-          localStorage.setItem('wx_62_data', dataVal); // 备份
-          if (matchedAcc && matchedAcc.uuid) {
-            localStorage.setItem(`wx_62_data_${matchedAcc.uuid}`, dataVal);
-          }
-          console.log(`[AccountStore] 62数据已成功在冷启动时按账号 (${license}) 隔离保存至本地`);
-        }
-      } catch (err) {
-        console.warn('[AccountStore] 冷启动自动提取62数据失败:', err);
-      }
+      return autoSave62Data(this, license);
     },
     setGlobalConfig(url: string, adminKey: string, tokenKey: string, debug: any) {
       this.baseUrl = url;
@@ -195,13 +163,11 @@ export const useAccountStore = defineStore('account', {
       localStorage.setItem('debug_config', JSON.stringify(this.debug));
       syncDebugConfig(this.debug);
     },
-
     updateDebugConfig(config: Partial<DebugConfig>) {
       this.debug = { ...this.debug, ...config };
       localStorage.setItem('debug_config', JSON.stringify(this.debug));
       syncDebugConfig(this.debug);
     },
-
     updateAvatarConfig(config: Partial<AvatarConfig>, isGlobal = false) {
       if (isGlobal || !this.activeAccountUuid) {
         this.globalAvatarConfig = { ...this.globalAvatarConfig, ...config };
@@ -211,1187 +177,91 @@ export const useAccountStore = defineStore('account', {
         this.accountConfigs[this.activeAccountUuid] = { ...current, ...config };
         localStorage.setItem('account_avatar_configs', JSON.stringify(this.accountConfigs));
       }
-
-      // 🚀 如果更新了新 Redis 地址，且当前处于 Redis 极速模式，自动触发防抖读回同步
       if (config.redisWriteBackUrl !== undefined) {
         this.triggerDebouncedRedisSync();
       }
     },
 
-    triggerDebouncedRedisSync() {
-      const uuid = this.activeAccountUuid;
-      if (!uuid || !this.isRedisMode(uuid)) return;
-      const key = this.accounts.find(a => a.uuid === uuid)?.sessionKey || this.tokenKey;
-      if (!key) return;
-
-      if (redisSyncDebounceTimer) clearTimeout(redisSyncDebounceTimer);
-      redisSyncDebounceTimer = setTimeout(async () => {
-        const readUrl = this.resolveRedisUrl(uuid, '/other/SaveContactToRedis');
-        if (readUrl) {
-          console.log(`[AccountStore:Redis] 检测到新 Redis 地址已填写，自动触发增量读回同步... (账号: ${uuid})`);
-          await this.syncViaRedis(uuid, key);
-        }
-      }, 1000); // 防抖 1 秒，等待用户输入完毕
+    // 3. 配置解析及极速模式判定代理
+    getEffectiveAvatarConfig(uuid?: string) {
+      return getEffectiveAvatarConfig(this, uuid);
     },
-
-    getEffectiveAvatarConfig(uuid?: string): AvatarConfig {
-      const targetUuid = uuid || this.activeAccountUuid;
-      const globalConf = this.globalAvatarConfig;
-      if (targetUuid && this.accountConfigs[targetUuid]) {
-        const config = this.accountConfigs[targetUuid];
-        return {
-          downloadEnabled: config.downloadEnabled !== false,
-          cacheEnabled: config.cacheEnabled !== false,
-          isRedisLanMode: config.isRedisLanMode !== undefined ? !!config.isRedisLanMode : globalConf.isRedisLanMode,
-          redisWriteBackUrl: config.redisWriteBackUrl !== undefined ? config.redisWriteBackUrl : globalConf.redisWriteBackUrl
-        };
-      }
-      return globalConf;
-    },
-
-    /**
-     * 动态解析新 Redis 服务器具体的 API 接口完整地址
-     * 自动处理简化后的 IP:Port 输入，并兼容历史绝对 URL 配置，同时附带会话 key
-     */
     resolveRedisUrl(uuid: string, apiPath: string): string {
-      const config = this.getEffectiveAvatarConfig(uuid);
-      let baseUrl = config.redisWriteBackUrl || '';
-      if (!baseUrl) {
-        baseUrl = 'http://192.168.50.99:7379';
-      }
-      baseUrl = baseUrl.trim().replace(/\/$/, '');
-      
-      // 兼容旧版包含绝对路径的形式 (包含 /other/)
-      if (baseUrl.includes('/other/')) {
-        try {
-          const urlObj = new URL(baseUrl);
-          baseUrl = `${urlObj.protocol}//${urlObj.host}`;
-        } catch (e) {
-          const match = baseUrl.match(/^(https?:\/\/[^\/]+)/);
-          if (match) baseUrl = match[1];
-        }
-      }
-      
-      // 补充默认协议
-      if (!baseUrl.startsWith('http://') && !baseUrl.startsWith('https://')) {
-        baseUrl = `http://${baseUrl}`;
-      }
-      
-      const key = this.accounts.find(a => a.uuid === uuid)?.sessionKey || this.tokenKey || '';
-      return `${baseUrl}${apiPath}?key=${key}`;
+      return resolveRedisUrl(this, uuid, apiPath);
     },
-
-    /**
-     * 判断指定账号是否启用了局域网 Redis 极速模式
-     * 优先级：账号独立配置 > 全局默认配置 > false
-     */
     isRedisMode(uuid?: string): boolean {
-      const config = this.getEffectiveAvatarConfig(uuid);
-      return !!config.isRedisLanMode;
+      return isRedisMode(this, uuid);
     },
 
-    /**
-     * 从 Redis 快照的 ModContacts 数组一次性填充内存联系人 Map
-     * 替代传统的分页 GetContactList + 队列式 GetContactDetailsList
-     */
+    // 4. Redis 核心数据同步代理
+    triggerDebouncedRedisSync() {
+      return triggerDebouncedRedisSync(this);
+    },
     fillContactsFromRedis(accountUuid: string, modContacts: any[]) {
-      if (!modContacts || !Array.isArray(modContacts)) return;
-      const map: Record<string, any> = this.accountContactMaps[accountUuid] || {};
-      let count = 0;
-      modContacts.forEach(c => {
-        const wxid = c.userName?.str || c.UserName?.str || c.wxid || c.userName || c.UserName;
-        if (wxid) {
-          map[wxid] = {
-            ...map[wxid],
-            ...c
-          };
-          count++;
-        }
-      });
-      this.accountContactMaps[accountUuid] = map;
-      console.log(`[AccountStore:Redis] 从 Redis 快照填充了 ${count} 个联系人 (账号: ${accountUuid})`);
+      return fillContactsFromRedis(this, accountUuid, modContacts);
     },
-
-    /**
-     * Redis 极速模式的冷启动同步入口
-     * 双引擎并行联动逻辑：
-     * 1. 阶段 A (原 Redis 只读快照)：使用全局基准 IP (this.baseUrl) 调 /other/GetRedisSyncMsg 快速填充最近消息与好友底模
-     * 2. 阶段 B (新 Redis 读回补写联系人)：如果配置了新 Redis 地址，则利用该独占 IP 读回增量补写联系人覆盖内存
-     */
     async syncViaRedis(uuid: string, key: string) {
-      // --- 阶段 A：原 Redis 只读快照获取并快速同步 (使用主服务全局 IP) ---
-      try {
-        console.log(`[AccountStore:Redis] 开始原 Redis 极速同步 (只读, 账号: ${uuid})`);
-
-        // 构造原主服务 IP 的绝对 URL 确保绝对不发生 IP 污染
-        const originalBase = this.baseUrl || localStorage.getItem('baseUrl') || '';
-        let originalUrl = `/other/GetRedisSyncMsg?key=${key}`;
-        if (originalUrl.startsWith('/')) {
-          if (originalBase) {
-            originalUrl = `${originalBase.replace(/\/$/, '')}${originalUrl}`;
-          } else {
-            originalUrl = `/api${originalUrl}`;
-          }
-        }
-
-        console.log(`[AccountStore:Redis] 请求原 Redis 同步接口 (URL: ${originalUrl})`);
-        const res: any = await request.post(originalUrl, {});
-        const data = res?.Data || res;
-
-        // 1. 填充联系人（ModContacts）
-        const modContacts = data?.ModContacts || [];
-        if (modContacts.length > 0) {
-          this.fillContactsFromRedis(uuid, modContacts);
-        }
-
-        // 2. 填充自身信息（ModUserInfos）
-        const modUserInfos = data?.ModUserInfos || [];
-        if (modUserInfos.length > 0) {
-          const selfInfo = modUserInfos[0];
-          const selfWxid = selfInfo.userName?.str || selfInfo.UserName?.str || selfInfo.userName || selfInfo.UserName;
-          if (selfWxid) {
-            this.fillContactsFromRedis(uuid, [selfInfo]);
-          }
-        }
-
-        // 3. 填充消息（AddMsgs）
-        const addMsgs = data?.AddMsgs || [];
-        if (addMsgs.length > 0) {
-          const { MessageParser } = await import('@/utils/parser');
-          const chatStore = useChatStore();
-          let processedCount = 0;
-          for (const rawMsg of addMsgs) {
-            const parsed = MessageParser.parse(rawMsg, uuid);
-            // 跳过状态通知等非显示类消息
-            if (parsed.type === 'status_notify' || (!parsed.content && parsed.type === 'unsupported')) {
-              if (parsed.type === 'status_notify' && parsed.statusNotifyData?.username) {
-                await chatStore.clearUnread(uuid, parsed.statusNotifyData.username);
-              }
-              continue;
-            }
-            await chatStore.addParsedMessage(uuid, parsed, true);
-            processedCount++;
-          }
-          console.log(`[AccountStore:Redis] 从原 Redis 快照处理了 ${processedCount}/${addMsgs.length} 条消息`);
-        }
-        console.log(`[AccountStore:Redis] 原 Redis 同步完成 (联系人: ${modContacts.length}, 消息: ${addMsgs.length})`);
-      } catch (err) {
-        console.warn('[AccountStore:Redis] 原 Redis 只读快照同步失败，继续尝试新 Redis 读回:', err);
-      }
-
-      // --- 阶段 B：新 Redis 读回补写联系人（自动启动，在不同服务器） ---
-      const readUrl = this.resolveRedisUrl(uuid, '/other/SaveContactToRedis');
-      if (readUrl) {
-        console.log(`[AccountStore:Redis] 自动从新 Redis 读回补写联系人 (URL: ${readUrl})`);
-        try {
-          let newRes: any = null;
-          let methodUsed = 'GET';
-          try {
-            // 先尝试用 GET 请求读回联系人（标准的 RESTful 读取方式，安全且不会有覆盖副作用）
-            newRes = await request.get(readUrl);
-            console.log('[AccountStore:Redis] 从新 Redis 读回原始响应 (GET):', newRes);
-          } catch (getErr) {
-            console.warn('[AccountStore:Redis] 新 Redis GET 请求失败，将尝试 POST:', getErr);
-          }
-
-          // 如果 GET 没有读到任何数据（或者报错了），尝试用 POST 空 Body {} 读回
-          if (!newRes || (Array.isArray(newRes) && newRes.length === 0) || (typeof newRes === 'object' && Object.keys(newRes).length === 0)) {
-            methodUsed = 'POST';
-            newRes = await request.post(readUrl, {});
-            console.log('[AccountStore:Redis] 从新 Redis 读回原始响应 (POST):', newRes);
-          }
-
-          // 兼容 JSON 字符串格式
-          if (typeof newRes === 'string') {
-            try {
-              newRes = JSON.parse(newRes);
-            } catch (e) {}
-          }
-
-          let newContacts: any[] = [];
-          if (Array.isArray(newRes)) {
-            newContacts = newRes;
-          } else if (newRes && typeof newRes === 'object') {
-            // 尝试从各种可能的外壳或属性中安全地抓取数组
-            const dataContent = newRes.Data !== undefined ? newRes.Data : (newRes.data !== undefined ? newRes.data : newRes);
-            if (Array.isArray(dataContent)) {
-              newContacts = dataContent;
-            } else if (dataContent && typeof dataContent === 'object') {
-              const list = dataContent.ModContacts || dataContent.modContacts || dataContent.contacts || dataContent.List || dataContent.list;
-              if (Array.isArray(list)) {
-                newContacts = list;
-              } else {
-                // 终极遍历兜底：寻找该对象下的任意 Array 子属性作为联系人源
-                for (const k of Object.keys(dataContent)) {
-                  if (Array.isArray(dataContent[k])) {
-                    newContacts = dataContent[k];
-                    break;
-                  }
-                }
-              }
-            }
-          }
-
-          if (newContacts.length > 0) {
-            this.fillContactsFromRedis(uuid, newContacts);
-            console.log(`[AccountStore:Redis] 成功从新 Redis 读回并填充了 ${newContacts.length} 个补写联系人 (使用方法: ${methodUsed})`);
-          } else {
-            console.log(`[AccountStore:Redis] 从新 Redis 读回了 0 个补写联系人 (使用方法: ${methodUsed})，原始响应详情:`, JSON.stringify(newRes));
-          }
-        } catch (newErr) {
-          console.error('[AccountStore:Redis] 从新 Redis 读回补写联系人失败:', newErr);
-        }
-      }
-      
-      // 🚀 同步完成，将该账号的联系人加载状态标记为 true，安全解除 Redis 回写锁定！
-      this.isContactListLoadedMap[uuid] = true;
-      console.log(`[AccountStore:Redis] 账号 ${uuid} 的联系人加载完成，已解除 Redis 自动回写锁定。`);
+      return syncViaRedis(this, uuid, key);
     },
-
-    async preloadOfflineAccountAvatars() {
-      for (const acc of this.accounts) {
-        if (acc.uuid && !acc.uuid.startsWith('license-') && !acc.uuid.startsWith('token-')) {
-          try {
-            // 从对应账号的 IndexedDB 中读取自身资料
-            const selfContact = (await contactCache.get(acc.uuid, acc.uuid)) as any;
-            if (selfContact) {
-              if (!this.accountContactMaps[acc.uuid]) {
-                this.accountContactMaps[acc.uuid] = {};
-              }
-              this.accountContactMaps[acc.uuid][acc.uuid] = selfContact;
-              
-              // 顺便解析并触发头像缓存读取
-              const url = selfContact.smallHeadImgUrl || selfContact.SmallHeadImgUrl || selfContact.headImgUrl || selfContact.HeadImgUrl || selfContact.avatar || '';
-              const rawUrl = typeof url === 'string' ? url.trim().replace(/`/g, '') : '';
-              if (rawUrl) {
-                // 如果是常规可下载的 HTTP 链接，获取 Blob 并返回本地 Blob URL
-                const isHttp = rawUrl.startsWith('http://') || rawUrl.startsWith('https://');
-                if (isHttp) {
-                  const blobUrl = await this.getAvatarUrl(rawUrl);
-                  if (blobUrl) {
-                    acc.avatar = blobUrl;
-                  }
-                } else {
-                  acc.avatar = rawUrl;
-                }
-              }
-            }
-          } catch (e) {
-            console.warn(`[AccountStore] 预加载账号 ${acc.uuid} 自身头像失败:`, e);
-          }
-        }
-      }
-    },
-
-    async syncAccountsFromServer() {
-      try {
-        let data: any[] = [];
-        
-        if (this.tokenKey) {
-          // TOKEN_KEY 模式：直接调 getProfile 作为唯一真相，不依赖 getOnlineStatus 解析 wxid
-          console.log('[AccountStore] 使用 TOKEN_KEY 模式，调用 GetProfile 解析真实 wxid...');
-          try {
-            const profileRes: any = await loginApi.getProfile(this.tokenKey);
-            // 拦截器已剥离 Code/Data 外壳，profileRes 就是 Data 体
-            const profileData = profileRes?.Data || profileRes;
-            const userInfo = (profileData?.userInfo || profileData?.UserInfo || profileData) as any;
-            const userInfoExt = (profileData?.userInfoExt || profileData?.UserInfoExt) as any;
-            
-            const realWxid = userInfo?.userName?.str || userInfo?.UserName?.str 
-                           || userInfo?.userName || userInfo?.UserName;
-            const realNick = userInfo?.nickName?.str || userInfo?.NickName?.str 
-                           || userInfo?.nickName || userInfo?.NickName;
-            const realAvatar = (userInfoExt ? (
-                                 extractAvatarString(userInfoExt.smallHeadImgUrl) 
-                              || extractAvatarString(userInfoExt.SmallHeadImgUrl) 
-                              || extractAvatarString(userInfoExt.headImgUrl) 
-                              || extractAvatarString(userInfoExt.HeadImgUrl) 
-                              || extractAvatarString(userInfoExt.bigHeadImgUrl) 
-                              || extractAvatarString(userInfoExt.BigHeadImgUrl) 
-                              || extractAvatarString(userInfoExt.avatar)
-                               ) : '')
-                             || extractAvatarString(userInfo?.smallHeadImgUrl) 
-                             || extractAvatarString(userInfo?.SmallHeadImgUrl) 
-                             || extractAvatarString(userInfo?.headImgUrl) 
-                             || extractAvatarString(userInfo?.HeadImgUrl)
-                             || extractAvatarString(userInfo?.bigHeadImgUrl) 
-                             || extractAvatarString(userInfo?.BigHeadImgUrl)
-                             || extractAvatarString(userInfo?.avatar);
-
-            const realAlias = userInfo?.alias?.str || userInfo?.Alias?.str
-                            || userInfo?.alias || userInfo?.Alias;
-            const resolvedUuid = realWxid || this.tokenKey;
-            console.log(`[AccountStore] TOKEN_KEY 模式 GetProfile 解析: uuid=${resolvedUuid}`);
-
-            // 直接 await 拿到本地 blob URL（如果缓存有就直接命中，不再重新下载）
-            const resolvedAvatar = realAvatar ? await this.getAvatarUrl(realAvatar) : '';
-
-            this.accounts = [{
-              uuid: resolvedUuid,
-              sessionKey: this.tokenKey,
-              nickname: realNick || '授权账号',
-              avatar: resolvedAvatar || realAvatar || '',
-              status: 'offline',
-              alias: realAlias || ''
-            }];
-          } catch (e) {
-            console.warn('[AccountStore] TOKEN_KEY GetProfile 失败，使用 tokenKey 占位:', e);
-            this.accounts = [{
-              uuid: this.tokenKey,
-              sessionKey: this.tokenKey,
-              nickname: '授权账号',
-              avatar: '',
-              status: 'offline'
-            }];
-          }
-
-          // 🚀 在此预加载所有离线/缓存账号的自身头像
-          await this.preloadOfflineAccountAvatars();
-
-          // 设置活跃账号（此时 uuid 已是真实 wxid 或 tokenKey）
-          const targetAcc = this.accounts[0];
-          if (targetAcc) {
-            this.activeAccountUuid = targetAcc.uuid;
-            if (targetAcc.sessionKey) {
-              const isOnline = await this.checkSingleAccountStatus(targetAcc.sessionKey);
-              if (isOnline) {
-                // 冷启动自动提取并保存62数据
-                this.autoSave62Data(targetAcc.sessionKey);
-                socketManager.registerAccount(targetAcc.uuid, targetAcc.sessionKey);
-                // 根据模式选择数据加载策略
-                if (this.isRedisMode(targetAcc.uuid)) {
-                  // 🚀 Redis 极速模式：跳过 IndexedDB，直接从 Redis 快照填充
-                  await this.syncViaRedis(targetAcc.uuid, targetAcc.sessionKey);
-                } else {
-                  // 常规模式：从 IndexedDB 加载缓存 + 分页 API 补全
-                  this.loadContactsFromCache(targetAcc.uuid);
-                  this.syncFullContactList(targetAcc.uuid, targetAcc.sessionKey);
-                }
-              } else {
-                console.log(`[AccountStore] 账号 ${targetAcc.uuid} 离线，跳过数据同步`);
-              }
-            }
-          }
-
-        } else if (this.adminKey) {
-          const res: any = await adminApi.getOnlineAccounts();
-          console.log('[AccountStore] 使用 ADMIN_KEY 获取到账号列表');
-          data = res.Data || res;
-
-          // adminKey 模式：先用 API 返回的 ID 建账号，再通过 getProfile 修正为真实 wxid
-          this.accounts = await Promise.all((Array.isArray(data) ? data : []).map(async (acc: any) => {
-            const userName = acc.userName || acc.UserName || acc.wx_id || acc.uuid || acc.wxid;
-            const key = acc.license || acc.key || acc.session_key || acc.sessionKey || '';
-            const rawAvatar = acc.avatar || '';
-            // 直接用已缓存的 blob URL，如果本地无缓存就用原始 URL
-            const resolvedAvatar = rawAvatar ? await this.getAvatarUrl(rawAvatar) || rawAvatar : '';
-            const aliasVal = acc.alias || acc.Alias || '';
-            return {
-              uuid: userName || key || '',
-              sessionKey: key,
-              nickname: acc.nick_name || acc.nickname || (userName ? '已登录' : '未登录槽位'),
-              avatar: resolvedAvatar,
-              status: 'offline', // 初始先设为离线，由 checkSingleAccountStatus 修正
-              alias: aliasVal
-            };
-          }));
-
-          if (this.accounts.length > 0 && !this.activeAccountUuid) {
-            const firstOnline = this.accounts.find(a => a.uuid);
-            if (firstOnline) this.activeAccountUuid = firstOnline.uuid;
-          }
-
-          // 🚀 在此预加载所有离线/缓存账号的自身头像
-          await this.preloadOfflineAccountAvatars();
-
-          // 异步修正 ID：getProfile → 拿到真实 wxid → 再注册 Socket
-          // 🚀 核心修复：改为串行执行，防止并发请求冲垮后端 API（尤其是 getProfile），导致其他账号数据补全失败
-          const initializeAccounts = async () => {
-            for (const acc of this.accounts) {
-              if (acc.sessionKey) {
-                // 等待每一个账号初始化完成，留给服务器处理时间
-                await this.fetchProfileAndFixUuid(acc.sessionKey);
-                await new Promise(resolve => setTimeout(resolve, 500)); // 增加 500ms 缓冲防限频
-              }
-            }
-            // 🚀 所有账号初始化/槽位修正完毕后，二次触发离线/缓存头像的预加载
-            await this.preloadOfflineAccountAvatars();
-          };
-          initializeAccounts();
-        }
-      } catch (err) {
-        console.error('获取账号列表失败:', err);
-      }
-    },
-
-    async checkSingleAccountStatus(license: string): Promise<boolean> {
-      if (!license) return false;
-      try {
-        const res: any = await loginApi.getOnlineStatus(license);
-        const data = res?.Data || res;
-        if (data) {
-          const isOnline = data.loginState === 1;
-          const accIndex = this.accounts.findIndex(a => a.sessionKey === license);
-          if (accIndex > -1) {
-            const acc = this.accounts[accIndex];
-            const wasOffline = acc.status === 'offline';
-            acc.status = isOnline ? 'online' : 'offline';
-            
-            // 如果账号从离线变成了在线，自动激活在线模式并开始极速同步，无需刷新
-            if (wasOffline && isOnline) {
-              console.log(`[AccountStore] 检测到账号 [${acc.nickname || '微信'}] 从离线恢复在线，自动启动激活流程...`);
-              
-              // 自动弹出友好提示
-              Message.success({
-                content: `检测到账号 [${acc.nickname || '微信'}] 已成功上线！已自动激活在线模式。`,
-                duration: 4
-              });
-
-              // 1. 冷启动自动提取并保存62数据
-              this.autoSave62Data(license);
-
-              // 2. 根据账号 UUID 阶段选择激活路径
-              if (acc.uuid && acc.uuid !== license) {
-                // 已有真实微信 ID 的老账号上线：直接建立长连接并开始数据极速同步
-                socketManager.registerAccount(acc.uuid, license);
-                if (this.isRedisMode(acc.uuid)) {
-                  await this.syncViaRedis(acc.uuid, license);
-                } else {
-                  await this.loadContactsFromCache(acc.uuid);
-                  await this.syncFullContactList(acc.uuid, license);
-                }
-              } else {
-                // 尚未获取真实微信 ID 的新槽位上线：自动通过 fetchProfileAndFixUuid 解析并迁移数据
-                this.fetchProfileAndFixUuid(license).catch(err => {
-                  console.error('[AccountStore] 自动解析激活失败:', err);
-                });
-              }
-            }
-          }
-          return isOnline;
-        }
-      } catch (err) {
-        console.error(`[AccountStore] 检测状态失败 (${license}):`, err);
-        const accIndex = this.accounts.findIndex(a => a.sessionKey === license);
-        if (accIndex > -1) {
-          this.accounts[accIndex].status = 'offline';
-        }
-      }
-      return false;
-    },
-
-    async fetchProfileAndFixUuid(license: string) {
-      try {
-        const isOnline = await this.checkSingleAccountStatus(license);
-        if (isOnline) {
-          // 冷启动自动提取并保存62数据
-          this.autoSave62Data(license);
-        }
-
-        const res: any = await loginApi.getProfile(license);
-        console.log(`[AccountStore] GetProfile 原始响应:`, res);
-        
-        // 修正：拦截器已经剥离了 Data 层，res 可能就是数据本身，也可能还带着 Data (取决于 API 实现)
-        const data = res?.Data || res;
-        const userInfo = data?.userInfo || data?.UserInfo || data; 
-        const userInfoExt = data?.userInfoExt || data?.UserInfoExt;
-        
-        console.log(`[AccountStore] 提取到的 userInfo 节点:`, userInfo);
-        console.log(`[AccountStore] 提取到的 userInfoExt 节点:`, userInfoExt);
-        
-        if (!userInfo || (!userInfo.userName && !userInfo.UserName)) {
-          console.warn(`[AccountStore] GetProfile 未能解析到 userInfo 结构`, res);
-          return null;
-        }
-
-        const realWxid = userInfo.userName?.str || userInfo.UserName?.str || userInfo.userName || userInfo.UserName;
-        const realNick = userInfo.nickName?.str || userInfo.NickName?.str || userInfo.nickName || userInfo.NickName;
-        
-        const rawSmallUrl = userInfoExt?.smallHeadImgUrl || userInfoExt?.SmallHeadImgUrl || userInfo?.smallHeadImgUrl || userInfo?.SmallHeadImgUrl;
-        console.log(`[AccountStore] smallHeadImgUrl 原始节点值:`, rawSmallUrl);
-        
-        const realAvatar = (userInfoExt ? (
-                             extractAvatarString(userInfoExt.smallHeadImgUrl) 
-                          || extractAvatarString(userInfoExt.SmallHeadImgUrl) 
-                          || extractAvatarString(userInfoExt.headImgUrl) 
-                          || extractAvatarString(userInfoExt.HeadImgUrl) 
-                          || extractAvatarString(userInfoExt.bigHeadImgUrl) 
-                          || extractAvatarString(userInfoExt.BigHeadImgUrl) 
-                          || extractAvatarString(userInfoExt.avatar)
-                           ) : '')
-                         || extractAvatarString(userInfo.smallHeadImgUrl) 
-                         || extractAvatarString(userInfo.SmallHeadImgUrl) 
-                         || extractAvatarString(userInfo.headImgUrl) 
-                         || extractAvatarString(userInfo.HeadImgUrl) 
-                         || extractAvatarString(userInfo.bigHeadImgUrl) 
-                         || extractAvatarString(userInfo.BigHeadImgUrl) 
-                         || extractAvatarString(userInfo.avatar);
-                         
-        console.log(`[AccountStore] 解析出 realAvatar 头像 URL:`, realAvatar);
-
-        if (realWxid) {
-          console.log(`[AccountStore] 身份比对: 当前ID vs 真实ID -> ${license.substring(0,10)}... vs ${realWxid}`);
-          
-          const chatStore = useChatStore();
-          // 注意：我们要找的是 sessionKey 匹配的那个账号对象
-          const accIndex = this.accounts.findIndex(a => a.sessionKey === license);
-          if (accIndex > -1) {
-            const oldUuid = this.accounts[accIndex].uuid;
-
-            // 只有当当前的 uuid 与真实的 realWxid 不一致时，才需要进行数据迁移和 Socket 重置
-            if (oldUuid && oldUuid !== realWxid) {
-              console.log(`[AccountStore] 触发 ID 修正与数据迁移: ${oldUuid} -> ${realWxid}`);
-              
-              // 1. 迁移内存镜像
-              if (this.accountContactMaps[oldUuid]) {
-                this.accountContactMaps[realWxid] = { 
-                  ...this.accountContactMaps[realWxid], 
-                  ...this.accountContactMaps[oldUuid] 
-                };
-                delete this.accountContactMaps[oldUuid];
-              }
-
-              // 2. 迁移聊天记录 Pinia
-              chatStore.migrateData(oldUuid, realWxid);
-              
-              // 3. 迁移 IndexedDB
-              await contactCache.migrateAccountData(oldUuid, realWxid);
-              
-              // 4. 更新 Store 中的账号信息
-              this.accounts[accIndex].uuid = realWxid;
-
-              // 5. 重启 Socket 关联
-              if (oldUuid) {
-                socketManager.stopAccount(oldUuid);
-              }
-            }
-
-            // 无论是否需要迁移，都更新并同步最新的个人资料与头像缓存
-            const realAlias = userInfo.alias?.str || userInfo.Alias?.str || userInfo.alias || userInfo.Alias;
-            this.accounts[accIndex].alias = realAlias || '';
-            if (realNick) {
-              this.accounts[accIndex].nickname = realNick;
-            }
-
-            // 直接用本地缓存的 blob URL，避免防盗链导致原始 URL 无法渲染
-            const rawAvatar = realAvatar || this.accounts[accIndex].avatar;
-            if (rawAvatar) {
-              this.accounts[accIndex].avatar = await this.getAvatarUrl(rawAvatar) || rawAvatar;
-            }
-            
-            // 🚀 核心优化：将账号自身信息作为一条联系人数据强制写入本地 DB 与内存缓存中，保证 getAccountAvatar 始终完美命中自身头像
-            const selfProfile = {
-              userName: { str: realWxid },
-              nickName: { str: realNick || '微信用户' },
-              smallHeadImgUrl: realAvatar,
-              headImgUrl: realAvatar,
-              contactType: 0
-            };
-            await this.updateContact(realWxid, selfProfile, realWxid);
-            
-            if (this.activeAccountUuid === oldUuid || this.activeAccountUuid === license) {
-              this.activeAccountUuid = realWxid;
-            }
-
-            if (isOnline) {
-              // 这里 registerAccount 内部会自己处理 wxid 查找，但我们已经知道 realWxid 了
-              socketManager.registerAccount(realWxid, license);
-              
-              // 根据模式选择数据加载策略
-              if (this.isRedisMode(realWxid)) {
-                await this.syncViaRedis(realWxid, license);
-              } else {
-                // 6. 重新加载新 ID 的缓存
-                await this.loadContactsFromCache(realWxid);
-                // 7. 触发新 ID 的全量同步判断
-                this.syncFullContactList(realWxid, license);
-              }
-            }
-            return { realWxid, realNick, realAvatar };
-          }
-        }
-      } catch (e) {
-        console.warn('[AccountStore] 资料补全失败:', e);
-      }
-      return null;
-    },
-
-    async loadContactsFromCache(accountUuid?: string) {
-      const targetUuid = accountUuid || this.activeAccountUuid;
-      if (!targetUuid) return;
-      
-      // 🚀 优化：如果内存已存在该账号的联系人，不再重复读取 IndexedDB
-      if (this.accountContactMaps[targetUuid] && Object.keys(this.accountContactMaps[targetUuid]).length > 0) {
-        if (this.debug.cache) {
-          console.log(`[AccountStore] 命中内存缓存，跳过 DB 读取联系人 (账号: ${targetUuid})`);
-        }
-        return;
-      }
-      
-      const all = await contactCache.getAll(targetUuid);
-      const map: Record<string, any> = {};
-      all.forEach((c: any) => {
-        // 增加更健壮的 wxid 解析逻辑，确保能匹配到各种 API 返回的结构
-        const wxid = c.userName?.str || c.UserName?.str || c.wxid || c.userName || c.UserName;
-        if (wxid) {
-          map[wxid] = c;
-        }
-      });
-      
-      this.accountContactMaps[targetUuid] = map;
-      console.log(`[AccountStore] 从 DB 加载了 ${Object.keys(map).length} 个联系人 (账号: ${targetUuid})`);
-    },
-
-    async updateContact(wxid: string, detail: any, accountUuid?: string, triggerAutoFetch = true) {
-      if (!wxid) return;
-      const targetUuid = accountUuid || this.activeAccountUuid;
-      if (!targetUuid) return;
-
-      if (!this.accountContactMaps[targetUuid]) {
-        this.accountContactMaps[targetUuid] = {};
-      }
-      
-      this.accountContactMaps[targetUuid][wxid] = { 
-        ...this.accountContactMaps[targetUuid][wxid], 
-        ...detail,
-        isPlaceholder: false, // 清除占位标记
-        lastUpdated: Date.now() // 🚀 记录更新时间戳，用于缓存过期控制
-      };
-
-      // 🚀 Redis 极速模式下，自动触发防抖全量回写到 Redis，持久化取代 IndexedDB (安全去重，防止单个写覆盖)
-      if (this.isRedisMode(targetUuid)) {
-        this.triggerDebouncedRedisWriteback(targetUuid);
-      } else {
-        // 常规模式：写入 IndexedDB 缓存
-        contactCache.set(wxid, this.accountContactMaps[targetUuid][wxid], targetUuid);
-      }
-
-      // 如果是群聊，且开启了自动解析
-      const isChatRoom = wxid.endsWith('@chatroom');
-      if (isChatRoom && triggerAutoFetch) {
-        // 提取群成员列表
-        const memberList = detail.chatRoomMembers || detail.memberList || detail.MemberList || [];
-        if (memberList.length > 0) {
-          const memberWxids = memberList.map((m: any) => 
-            typeof m === 'string' ? m : (m.userName?.str || m.UserName?.str || m.userName || m.UserName || m.wxid)
-          ).filter(Boolean);
-          
-          if (memberWxids.length > 0) {
-            console.log(`[AccountStore] 发现群 ${wxid} 成员列表 (${memberWxids.length}人)，加入静默占位...`);
-            memberWxids.forEach((mId: string) => {
-              if (!this.accountContactMaps[targetUuid][mId]) {
-                this.accountContactMaps[targetUuid][mId] = { wxid: mId, isPlaceholder: true };
-              }
-            });
-          }
-        }
-      }
-
-      // 反向同步：更新会话列表中的昵称和头像
-      const chatStore = useChatStore();
-      if (chatStore.accountConversations[targetUuid]) {
-        const convs = [...chatStore.accountConversations[targetUuid]];
-        const convIdx = convs.findIndex(c => c.wxid === wxid);
-        
-        if (convIdx > -1) {
-          const conv = { ...convs[convIdx] };
-          
-          // 获取最新名称逻辑 (备注 > 昵称 > wxid)
-          const newName = detail.remark?.str || detail.Remark?.str || detail.remark || detail.Remark 
-                        || detail.nickName?.str || detail.NickName?.str || detail.nickName || detail.NickName;
-          const newAvatar = detail.smallHeadImgUrl || detail.SmallHeadImgUrl || detail.headImgUrl || detail.avatar;
-          
-          if (newName) conv.nickname = newName;
-          if (newAvatar) {
-            conv.avatar = newAvatar;
-            // 立即触发头像预下载并存入缓存
-            this.getAvatarUrl(newAvatar);
-          }
-          
-          convs[convIdx] = conv;
-          chatStore.accountConversations[targetUuid] = convs;
-          
-          // 同时持久化会话更新到 DB（Redis 极速模式下跳过）
-          if (!this.isRedisMode(targetUuid)) {
-            contactCache.saveConversation(targetUuid, JSON.parse(JSON.stringify(conv)));
-          }
-        }
-      }
-    },
-
-    async checkFriendRelation(username: string) {
-      if (!username) return;
-      const targetUuid = this.activeAccountUuid;
-      if (!targetUuid) return;
-      const activeAcc = this.accounts.find(a => a.uuid === targetUuid);
-      const key = activeAcc?.sessionKey || this.tokenKey;
-      if (!key) {
-        throw new Error('当前账号未登录或缺少密钥');
-      }
-
-      try {
-        const res: any = await messageApi.getFriendRelation(key, username);
-        console.log(`[AccountStore] checkFriendRelation 结果:`, res);
-        
-        const relation = res?.FriendRelation !== undefined ? res.FriendRelation : -1;
-        const sign = res?.Sign || '';
-        const openid = res?.Openid || '';
-        
-        // 将关系信息合入联系人详情中并持久化
-        await this.updateContact(username, {
-          friendRelation: relation,
-          relationSign: sign,
-          relationOpenid: openid,
-          relationCheckedAt: Date.now()
-        }, targetUuid, false);
-
-        return res;
-      } catch (err: any) {
-        console.error('[AccountStore] 获取好友关系失败:', err);
-        throw err;
-      }
-    },
-
-    async forceUpdateContactDetails(username: string) {
-      if (!username) return;
-      const targetUuid = this.activeAccountUuid;
-      if (!targetUuid) return;
-      const activeAcc = this.accounts.find(a => a.uuid === targetUuid);
-      const key = activeAcc?.sessionKey || this.tokenKey;
-      if (!key) {
-        throw new Error('当前账号未登录或缺少密钥');
-      }
-
-      try {
-        const res: any = await messageApi.getContactDetailsList(key, [username]);
-        console.log(`[AccountStore] forceUpdateContactDetails 结果:`, res);
-        
-        let detailList: any[] = [];
-        if (Array.isArray(res)) detailList = res;
-        else if (res?.Data && Array.isArray(res.Data)) detailList = res.Data;
-        else if (res?.Data?.ContactList && Array.isArray(res.Data.ContactList)) detailList = res.Data.ContactList;
-        else if (res?.Data?.contactList && Array.isArray(res.Data.contactList)) detailList = res.Data.contactList;
-        else if (res?.Data?.List && Array.isArray(res.Data.List)) detailList = res.Data.List;
-        else if (res?.ContactList && Array.isArray(res.ContactList)) detailList = res.ContactList;
-        else if (res?.contactList && Array.isArray(res.contactList)) detailList = res.contactList;
-        
-        const detail = detailList.find(d => {
-          const wxid = d.userName?.str || d.UserName?.str || d.wxid || d.userName || d.UserName;
-          return wxid === username;
-        });
-
-        if (detail) {
-          // 强制更新详情到内存和数据库中
-          await this.updateContact(username, detail, targetUuid, false);
-          
-          // 如果有头像且是常规 HTTP 链接，也尝试拉取最新的头像本地缓存
-          const url = detail.smallHeadImgUrl || detail.SmallHeadImgUrl || detail.headImgUrl || detail.HeadImgUrl || detail.avatar || '';
-          const rawUrl = typeof url === 'string' ? url.trim().replace(/`/g, '') : '';
-          const isHttpUrl = rawUrl.startsWith('http://') || rawUrl.startsWith('https://');
-          if (rawUrl && isHttpUrl) {
-            await this.getAvatarUrl(rawUrl);
-          }
-          
-          return detail;
-        } else {
-          throw new Error('接口未返回有效的联系人详情');
-        }
-      } catch (err: any) {
-        console.error('[AccountStore] 强制更新资料失败:', err);
-        throw err;
-      }
-    },
-
-    async deleteContact(username: string) {
-      if (!username) return;
-      const targetUuid = this.activeAccountUuid;
-      if (!targetUuid) return;
-      const activeAcc = this.accounts.find(a => a.uuid === targetUuid);
-      const key = activeAcc?.sessionKey || this.tokenKey;
-      if (!key) {
-        throw new Error('当前账号未登录或缺少密钥');
-      }
-
-      try {
-        const res: any = await messageApi.delContact(key, username);
-        console.log(`[AccountStore] deleteContact 结果:`, res);
-
-        // 1. 从内存中删除联系人
-        if (this.accountContactMaps[targetUuid]) {
-          delete this.accountContactMaps[targetUuid][username];
-        }
-
-        // 2. 从 IndexedDB 数据库中删除联系人
-        if (!this.isRedisMode(targetUuid)) {
-          await contactCache.deleteContact(username, targetUuid);
-        } else {
-          this.triggerDebouncedRedisWriteback(targetUuid);
-        }
-
-        // 3. 从聊天列表和会话 DB 中也清理该联系人
-        const chatStore = useChatStore();
-        if (chatStore.accountConversations[targetUuid]) {
-          chatStore.accountConversations[targetUuid] = chatStore.accountConversations[targetUuid].filter(c => c.wxid !== username);
-          await contactCache.deleteConversation(username, targetUuid);
-        }
-
-        return res;
-      } catch (err: any) {
-        console.error('[AccountStore] 删除好友失败:', err);
-        throw err;
-      }
-    },
-
-    async syncFullContactList(uuid: string, key: string, force = false) {
-      // 1. 同步锁判断
-      if (this.syncLockMap[uuid]) return;
-      
-      this.syncLockMap[uuid] = true;
-      try {
-        // 🚀 Redis 极速模式：直接走 Redis 快照同步，跳过所有传统分页逻辑
-        if (this.isRedisMode(uuid)) {
-          console.log(`[AccountStore] 账号 ${uuid} 已启用 Redis 极速模式，走 Redis 同步路径`);
-          await this.syncViaRedis(uuid, key);
-          this.syncLockMap[uuid] = false;
-          return;
-        }
-
-        console.log(`[AccountStore] 开始全量同步检查 (账号: ${uuid}, 强制: ${force})`);
-
-        // 核心优化：先检查本地数据库是否有联系人
-        const currentDbCount = await contactCache.getCount('contacts', uuid);
-        
-        // 如果不是强制同步，且本地已经有联系人，则不再自动调用 API 刷新
-        if (!force && currentDbCount > 0) {
-          console.log(`[AccountStore] 账号 ${uuid} 本地已有联系人 (${currentDbCount}个), 跳过自动 API 同步`);
-          await this.loadContactsFromCache(uuid);
-          this.syncLockMap[uuid] = false;
-          return;
-        }
-
-        console.log(`[AccountStore] 本地无联系人或强制同步，开始调用接口获取 (账号: ${uuid})`);
-
-        // 第一阶段：GetFriendList (获取好友总数并同步第一页)
-        let apiTotalCount = 0;
-        try {
-          const friendRes: any = await messageApi.getFriendList(key);
-          const friendData = friendRes.Data || friendRes;
-          apiTotalCount = friendData.count || friendData.Count || 0;
-          const friendList = friendData.friendList || [];
-          
-          if (friendList.length > 0) {
-            console.log(`[AccountStore] GetFriendList 成功拉取 ${friendList.length} 个好友详情 (API 总数: ${apiTotalCount})`);
-            for (const f of friendList) {
-              const wxid = f.userName?.str || f.UserName?.str || f.wxid || f.userName || f.UserName;
-              if (wxid) {
-                // 如果是新发现的好友，或是只有占位符，存入占位并进行后续补全
-                if (!this.accountContactMaps[uuid]?.[wxid] || this.accountContactMaps[uuid]?.[wxid].isPlaceholder) {
-                  if (!this.accountContactMaps[uuid]) this.accountContactMaps[uuid] = {};
-                  this.accountContactMaps[uuid][wxid] = { wxid, ...f, isPlaceholder: false };
-                  
-                  // 反向写入 IndexedDB 缓存
-                  contactCache.set(wxid, f, uuid);
-                }
-              }
-            }
-          }
-        } catch (e) {
-          console.warn('[AccountStore] GetFriendList 失败:', e);
-        }
-
-        // 第二阶段：分页补漏
-        let currentContactSeq = 1;
-        let currentChatRoomSeq = 1;
-        let hasMore = true;
-        let newWxids: string[] = [];
-        let safetyCounter = 0;
-        
-        while (hasMore && safetyCounter < 100) {
-          safetyCounter++;
-          const res: any = await messageApi.getContactList(key, currentContactSeq, currentChatRoomSeq);
-          const data = res?.Data || res;
-          if (!data) break;
-          
-          const contactListData = data.contactList || data.ContactList || data;
-          if (!contactListData) break;
-          
-          // 1. 提取 ID 列表
-          const userList = contactListData.contactUsernameList || contactListData.UsernameList || 
-                           contactListData.userNameList || contactListData.MemberList || 
-                           contactListData.memberList || contactListData.List || [];
-          
-          if (userList.length > 0) {
-            for (const item of userList) {
-              const wxid = typeof item === 'string' ? item : (item.userName || item.UserName || item.wxid);
-              if (wxid) {
-                if (!this.accountContactMaps[uuid]?.[wxid] || this.accountContactMaps[uuid]?.[wxid].isPlaceholder) {
-                  if (!this.accountContactMaps[uuid]) this.accountContactMaps[uuid] = {};
-                  if (!this.accountContactMaps[uuid][wxid]) {
-                    this.accountContactMaps[uuid][wxid] = { wxid, isPlaceholder: true };
-                  }
-                  newWxids.push(wxid);
-                }
-              }
-            }
-          }
-
-          // 2. 提取并更新版本号指针 (大数字)
-          const nextContactSeq = data.currentWxcontactSeq || data.CurrentWxcontactSeq || contactListData.currentWxcontactSeq || contactListData.CurrentWxcontactSeq || 0;
-          const nextChatRoomSeq = data.currentChatRoomContactSeq || data.CurrentChatRoomContactSeq || contactListData.currentChatRoomContactSeq || contactListData.CurrentChatRoomContactSeq || 0;
-          
-          // 3. 核心：通过 continueFlag 判断是否继续
-          const continueFlag = data.continueFlag !== undefined ? data.continueFlag :
-                               (data.ContinueFlag !== undefined ? data.ContinueFlag :
-                               (contactListData.continueFlag !== undefined ? contactListData.continueFlag : 
-                               (contactListData.ContinueFlag !== undefined ? contactListData.ContinueFlag : 0)));
-          
-          console.log(`[AccountStore] GetContactList 翻页: version(${currentContactSeq} -> ${nextContactSeq}), continueFlag: ${continueFlag}, 本页获取: ${userList.length}`);
-
-          if (continueFlag === 1) {
-            currentContactSeq = nextContactSeq;
-            currentChatRoomSeq = nextChatRoomSeq;
-            
-            // 优化：每获取一页(50个)，只存入占位符，不再主动触发详情补全（改为懒加载）
-            if (newWxids.length >= 50) {
-              newWxids.splice(0, newWxids.length);
-              console.log(`[AccountStore] 已存入 50 个联系人占位符...`);
-            }
-            
-            // 防止请求过快，给服务器留点喘息时间
-            await new Promise(r => setTimeout(r, 100));
-          } else {
-            hasMore = false;
-          }
-        }
-        
-        // 自动触发详情补全逻辑已移除，改为懒加载模式
-        this.lastSyncTimeMap[uuid] = Date.now();
-        this.isContactListLoadedMap[uuid] = true; // 🚀 也解除锁定
-        console.log(`[AccountStore] 通讯录索引同步完成 (账号: ${uuid})`);
-      } catch (err) {
-        console.error('同步流程异常:', err);
-      } finally {
-        this.syncLockMap[uuid] = false;
-      }
-    },
-
-    enqueueContactDetails(wxids: string | string[], accountUuid?: string) {
-      const targetUuid = accountUuid || this.activeAccountUuid;
-      if (!targetUuid) return;
-
-      const ids = Array.isArray(wxids) ? wxids : [wxids];
-      const map = this.accountContactMaps[targetUuid] || {};
-      
-      // 先为完全不存在的联系人写入占位符，确保他们立即出现在通讯录中
-      ids.forEach(id => {
-        if (id !== targetUuid && id !== 'filehelper' && !map[id]) {
-          if (!this.accountContactMaps[targetUuid]) {
-            this.accountContactMaps[targetUuid] = {};
-          }
-          this.accountContactMaps[targetUuid][id] = { wxid: id, isPlaceholder: true };
-          
-          // 如果非 Redis 模式，则写入 IndexedDB
-          if (!this.isRedisMode(targetUuid)) {
-            contactCache.set(id, this.accountContactMaps[targetUuid][id], targetUuid);
-          } else {
-            // Redis 模式触发防抖回写
-            this.triggerDebouncedRedisWriteback(targetUuid);
-          }
-        }
-      });
-
-      if (this.detailsQueue.length > 0) this.processDetailsQueue();
-      if (this.isRedisMode(targetUuid)) {
-        if (isDebug('socket')) {
-          console.log(`[AccountStore:Redis] 处于 Redis 极速模式，跳过对联系人 ${JSON.stringify(wxids)} 的真实 HTTP 详情请求`);
-        }
-        return;
-      }
-      
-      // 过滤掉自己、文件传输助手，以及已经有完整数据的联系人
-      const needsFetch = ids.filter(id => {
-        if (id === targetUuid || id === 'filehelper') return false;
-        
-        const contact = map[id] || this.accountContactMaps[targetUuid]?.[id];
-        return !contact || contact.isPlaceholder;
-      });
-      
-      needsFetch.forEach(id => {
-        if (!this.detailsQueue.includes(id)) {
-          this.detailsQueue.push(id);
-        }
-      });
-
-      this.processDetailsQueue();
-    },
-
-    async processDetailsQueue() {
-      if (this.isProcessingQueue || this.detailsQueue.length === 0) return;
-      this.isProcessingQueue = true;
-
-      const batchSize = 20;
-      // 修正：从活跃账号获取 key，如果没有则回退
-      const activeAcc = this.accounts.find(a => a.uuid === this.activeAccountUuid);
-      const key = activeAcc?.sessionKey || this.tokenKey;
-
-      try {
-        let completed = 0;
-        const total = this.detailsQueue.length;
-        
-        while (this.detailsQueue.length > 0) {
-          const batch = this.detailsQueue.splice(0, batchSize);
-          const details: any = await messageApi.getContactDetailsList(key, batch);
-          
-          let detailList: any[] = [];
-          if (Array.isArray(details)) detailList = details;
-          else if (details?.Data && Array.isArray(details.Data)) detailList = details.Data;
-          else if (details?.Data?.ContactList && Array.isArray(details.Data.ContactList)) detailList = details.Data.ContactList;
-          else if (details?.Data?.contactList && Array.isArray(details.Data.contactList)) detailList = details.Data.contactList;
-          else if (details?.Data?.List && Array.isArray(details.Data.List)) detailList = details.Data.List;
-          else if (details?.ContactList && Array.isArray(details.ContactList)) detailList = details.ContactList;
-          else if (details?.contactList && Array.isArray(details.contactList)) detailList = details.contactList;
-          
-          if (detailList.length === 0 && details?.Code !== 0) {
-            console.warn(`[AccountStore] 补全队列批次请求未返回有效数组，可能包含无效ID或触发限频`, details);
-          }
-          
-          for (const d of detailList) {
-            const wxid = d.userName?.str || d.UserName?.str || d.wxid || d.userName || d.UserName;
-            if (wxid) {
-              await this.updateContact(wxid, d);
-            }
-          }
-        }
-      } catch (err) {
-        console.error('[AccountStore] 补全队列异常:', err);
-      } finally {
-        this.isProcessingQueue = false;
-        if (this.detailsQueue.length > 0) this.processDetailsQueue();
-      }
-    },
-
-    async getAvatarUrl(url: string) {
-      if (!url) return '';
-      // 🚀 核心防御：如果不是常规的 HTTP 链接（比如微信原生的 srt2ihe: 协议），直接返回原字符串，防止网络 fetch 抛错
-      const isHttp = url.startsWith('http://') || url.startsWith('https://');
-      if (!isHttp) return url;
-
-      // 统一将 http 协议强转为 https，防止部署在 HTTPS 环境下时由于 Mixed Content (混合内容) 被浏览器直接拦截
-      if (url.startsWith('http://')) {
-        url = url.replace('http://', 'https://');
-      }
-      if (this.avatarBlobMap[url]) return this.avatarBlobMap[url];
-      const config = this.getEffectiveAvatarConfig();
-      if (config.cacheEnabled) {
-        const cached = await contactCache.getAvatar(url);
-        if (cached) {
-          const blobUrl = URL.createObjectURL(cached);
-          this.avatarBlobMap[url] = blobUrl;
-          return blobUrl;
-        }
-      }
-      const restrictedDomains = ['wx.qlogo.cn', 'mmhead.c2c.wechat.com'];
-      if (restrictedDomains.some(domain => url.includes(domain))) return url;
-      if (config.downloadEnabled) this.downloadAndCacheAvatar(url);
-      return url;
-    },
-
-    async downloadAndCacheAvatar(url: string) {
-      const config = this.getEffectiveAvatarConfig();
-      if (!config.downloadEnabled) return;
-      try {
-        const response = await fetch(url).catch(() => null);
-        if (!response || !response.ok) return;
-        const blob = await response.blob();
-        if (config.cacheEnabled) await contactCache.saveAvatar(url, blob);
-        const blobUrl = URL.createObjectURL(blob);
-        this.avatarBlobMap[url] = blobUrl;
-      } catch (e) {}
-    },
-
     triggerDebouncedRedisWriteback(uuid: string) {
-      if (!this.isRedisMode(uuid)) return;
-      
-      // 🔴 核心安全红线：如果当前账号的联系人列表尚未加载完毕，绝不准回写，防止空内存覆盖 Redis 完整数据！
-      // 🚀 根源优化：此拦截动作在同步期间属于完全预期的业务安全保底，直接静默 return 即可，不打印任何 warn 警告，彻底告别日志刷屏！
-      if (!this.isContactListLoadedMap[uuid]) return;
-
-      if (redisWritebackDebounceTimer) clearTimeout(redisWritebackDebounceTimer);
-      redisWritebackDebounceTimer = setTimeout(async () => {
-        console.log(`[AccountStore:Redis] 触发自动防抖全量回写 (账号: ${uuid})...`);
-        try {
-          await this.saveAllContactsToRedis(uuid);
-        } catch (err) {
-          console.error(`[AccountStore:Redis] 自动防抖全量回写失败:`, err);
-        }
-      }, 3000); // 3 秒内无新变更则执行一次全量回写
+      return triggerDebouncedRedisWriteback(this, uuid);
     },
-
     async saveAllContactsToRedis(uuid: string) {
-      const key = this.accounts.find(a => a.uuid === uuid)?.sessionKey;
-      if (!key) return;
-      // 过滤联系人：只回写单聊/个人联系人，排除群聊与公众号/系统特殊账号
-      const contacts = Object.values(this.accountContactMaps[uuid] || {}).filter((c: any) => {
-        const wxid = c.userName?.str || c.UserName?.str || c.wxid || c.userName || c.UserName || '';
-        if (!wxid) return false;
-        
-        // 排除群聊
-        if (wxid.endsWith('@chatroom')) return false;
-        
-        // 排除公众号与系统内置特殊账号
-        const specialIds = ['fmessage', 'medianote', 'floatbottle', 'newsapp', 'helper_entry', 'filehelper'];
-        if (wxid.startsWith('gh_') || specialIds.includes(wxid)) return false;
-        
-        return true;
-      });
-      if (contacts.length === 0) return;
-      
-      const writeBackUrl = this.resolveRedisUrl(uuid, '/other/SaveContactToRedis');
-      if (!writeBackUrl) return;
-      
-      console.log(`[AccountStore:Redis] 手动回写所有联系人 (${contacts.length} 个) 到 Redis: ${writeBackUrl}`);
-      try {
-        await request.post(writeBackUrl, { ModContacts: contacts });
-        console.log(`[AccountStore:Redis] 批量回写成功！`);
-      } catch (err) {
-        console.error(`[AccountStore:Redis] 批量回写失败:`, err);
-        throw err;
-      }
+      return saveAllContactsToRedis(this, uuid);
     },
 
+    // 5. 个人资料、身份修正及自身头像预加载代理
+    async preloadOfflineAccountAvatars() {
+      return preloadOfflineAccountAvatars(this);
+    },
+    async syncAccountsFromServer() {
+      return syncAccountsFromServer(this);
+    },
+    async checkSingleAccountStatus(license: string): Promise<boolean> {
+      return checkSingleAccountStatus(this, license);
+    },
+    async fetchProfileAndFixUuid(license: string) {
+      return fetchProfileAndFixUuid(this, license);
+    },
+
+    // 6. 好友、本地缓存及分页拉取代理
+    async loadContactsFromCache(accountUuid?: string) {
+      return loadContactsFromCache(this, accountUuid);
+    },
+    async updateContact(wxid: string, detail: any, accountUuid?: string, triggerAutoFetch = true) {
+      return updateContact(this, wxid, detail, accountUuid, triggerAutoFetch);
+    },
+    async checkFriendRelation(username: string) {
+      return checkFriendRelation(this, username);
+    },
+    async forceUpdateContactDetails(username: string) {
+      return forceUpdateContactDetails(this, username);
+    },
+    async deleteContact(username: string) {
+      return deleteContact(this, username);
+    },
+    async syncFullContactList(uuid: string, key: string, force = false) {
+      return syncFullContactList(this, uuid, key, force);
+    },
+
+    // 7. 详情静默补充队列代理
+    enqueueContactDetails(wxids: string | string[], accountUuid?: string) {
+      return enqueueContactDetails(this, wxids, accountUuid);
+    },
+    async processDetailsQueue() {
+      return processDetailsQueue(this);
+    },
+
+    // 8. 辅助工具及内存清理代理
+    async getAvatarUrl(url: string) {
+      return getAvatarUrl(url);
+    },
     getContactAvatar(c: any): string {
-      if (!c) return '';
-      const urlVal = c.smallHeadImgUrl || c.SmallHeadImgUrl || c.headImgUrl || c.HeadImgUrl || c.avatar || '';
-      let rawUrl = extractAvatarString(urlVal).trim().replace(/`/g, '');
-      if (!rawUrl) return '';
-      if (rawUrl.startsWith('http://')) {
-        rawUrl = rawUrl.replace('http://', 'https://');
-      }
-      this.getAvatarUrl(rawUrl);
-      return this.avatarBlobMap[rawUrl] || rawUrl;
+      return getContactAvatar(c);
     },
-
     getAccountAvatar(acc: any): string {
-      if (!acc) return '';
-      const selfContact = this.accountContactMaps[acc.uuid]?.[acc.uuid];
-      if (selfContact) {
-        const cached = this.getContactAvatar(selfContact);
-        if (cached) return cached;
-      }
-      let avatarUrl = acc.avatar;
-      if (avatarUrl) {
-        let rawUrl = extractAvatarString(avatarUrl).trim().replace(/`/g, '');
-        if (rawUrl) {
-          if (rawUrl.startsWith('http://')) {
-            rawUrl = rawUrl.replace('http://', 'https://');
-          }
-          this.getAvatarUrl(rawUrl);
-          return this.avatarBlobMap[rawUrl] || rawUrl;
-        }
-      }
-      return '';
+      return getAccountAvatar(this, acc);
     },
-
     clearMemoryAll(userName?: string) {
       if (userName) {
         delete this.lastSyncTimeMap[userName];
@@ -1406,7 +276,7 @@ export const useAccountStore = defineStore('account', {
         this.isContactListLoadedMap = {};
         this.accountContactMaps = {};
       }
-      console.log(`[AccountStore] 已成功清除内存中\${userName ? '指定账号 ' + userName : '所有账号'}的同步锁、同步时间及联系人镜像`);
+      console.log("[AccountStore] 已成功清除内存中" + (userName ? '指定账号 ' + userName : '所有账号') + "的同步锁、同步时间及联系人镜像");
     }
   }
 });

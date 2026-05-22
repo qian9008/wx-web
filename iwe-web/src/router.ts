@@ -1,7 +1,7 @@
-﻿import { createRouter, createWebHistory } from 'vue-router';
+import { createRouter, createWebHashHistory } from 'vue-router';
 
 const router = createRouter({
-  history: createWebHistory(),
+  history: createWebHashHistory(),
   routes: [
     {
       path: '/config',
@@ -24,7 +24,9 @@ const router = createRouter({
 
 router.beforeEach((to, from, next) => {
   const baseUrl = localStorage.getItem('iwe_base_url');
-  if (to.name !== 'Config' && !baseUrl) {
+  const isDemoMode = localStorage.getItem('isDemoMode') === 'true';
+  
+  if (to.name !== 'Config' && !baseUrl && !isDemoMode) {
     next({ name: 'Config' });
   } else {
     next();
