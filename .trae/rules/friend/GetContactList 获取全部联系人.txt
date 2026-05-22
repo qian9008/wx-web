@@ -1,0 +1,26 @@
+{
+  "Code": 200,
+  "Data": {
+    "ContactList": {
+      "baseResponse": {
+        "ret": 0,
+        "errMsg": {
+          "str": ""
+        }
+      },
+      "currentWxcontactSeq": 754444033,
+      "currentChatRoomContactSeq": 1,
+      "continueFlag": 1,
+      "contactUsernameList": [
+        "tmessage",
+        "gh_ref",
+        "medianote",
+        "q38378721",
+       
+      ]
+    },
+    "errMsg": "",
+    "retCode": 0
+  },
+  "Text": ""
+}

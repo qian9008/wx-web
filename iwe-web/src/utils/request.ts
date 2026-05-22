@@ -1,14 +1,21 @@
 import axios from 'axios';
 import { Message } from '@arco-design/web-vue';
+import { isDebug } from '@/utils/debug';
 
 const service = axios.create({
-  timeout: 10000,
+  timeout: 30000,
 });
 
 service.interceptors.request.use(
   (config) => {
-    const baseUrl = localStorage.getItem('iwe_base_url') || '';
-    const adminToken = localStorage.getItem('iwe_admin_token');
+    const isDemoMode = localStorage.getItem('isDemoMode') === 'true';
+    const baseUrl = isDemoMode ? '' : (localStorage.getItem('baseUrl') || localStorage.getItem('iwe_base_url') || '');
+    const adminKey = isDemoMode ? '' : localStorage.getItem('ADMIN_KEY');
+    const tokenKey = isDemoMode ? '' : localStorage.getItem('TOKEN_KEY');
+
+    if (isDebug('request')) {
+      console.log(`[Request] ${config.method?.toUpperCase()} ${config.url}`, config.params || '', config.data || '');
+    }
 
     if (baseUrl && config.url?.startsWith('/')) {
       config.url = `${baseUrl.replace(/\/$/, '')}${config.url}`;
@@ -16,12 +23,15 @@ service.interceptors.request.use(
       config.url = `/api${config.url}`;
     }
 
-    // 只有在 URL 和 params 中都没有 key 时，才注入默认的 adminToken
+    // 只有在 URL 和 params 中都没有 key 时，才注入默认的 key
     const hasKeyInUrl = config.url?.includes('key=');
     const hasKeyInParams = config.params?.key !== undefined;
 
-    if (adminToken && !hasKeyInUrl && !hasKeyInParams) {
-      config.params = { ...config.params, key: adminToken };
+    if (!hasKeyInUrl && !hasKeyInParams) {
+      const key = adminKey || tokenKey;
+      if (key) {
+        config.params = { ...config.params, key };
+      }
     }
     return config;
   },
@@ -31,12 +41,21 @@ service.interceptors.request.use(
 service.interceptors.response.use(
   (response) => {
     const res = response.data;
+
+    if (isDebug('request')) {
+      console.log(`[Response] ${response.config.url}`, res);
+    }
+
     // 【防御性逻辑】自动识别并拆除 Code/Data 外壳
     if (res && typeof res === 'object' && 'Code' in res) {
       if (res.Code === 200 || res.Code === 0) {
         return res.Data !== undefined ? res.Data : res;
       } else {
-        Message.error(res.Text || '业务请求失败');
+        const url = response.config.url || '';
+        // 静默处理的接口，不弹出全局错误，交由业务自行 catch 处理
+        if (!url.includes('/login/GetLoginStatus') && !url.includes('/login/GetProfile')) {
+          Message.error(res.Text || '业务请求失败');
+        }
         return Promise.reject(res);
       }
     }

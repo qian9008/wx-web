@@ -7,11 +7,24 @@ export const adminApi = {
   // 获取在线账号列表
   getOnlineAccounts: () => request.get('/admin/GetAuthKey'),
   
+  // 获取授权码列表
   getAuthKey: () => request.get('/admin/GetAuthKey'),
   
-  genAuthKey: (days: number) => request.get('/admin/GenAuthKey1', { params: { days } }),
+  // 生成授权码(新设备)
+  genAuthKey: (data: { Count: number, Days: number }) => request.post('/admin/GenAuthKey1', data),
   
-  delayAuthKey: (authKey: string, days: number) => request.get('/admin/DelayAuthKey', { params: { authKey, days } }),
+  // 授权码延期
+  delayAuthKey: (data: { Key: string, Days: number, ExpiryDate?: string }) => request.post('/admin/DelayAuthKey', {
+    ...data,
+    ExpiryDate: data.ExpiryDate || ""
+  }),
   
-  deleteAuthKey: (authKey: string) => request.get('/admin/DeleteAuthKey', { params: { authKey } }),
+  // 删除授权码
+  deleteAuthKey: (data: { Key: string, Opt: number }) => request.post('/admin/DeleteAuthKey', data),
+
+  // 获取回调地址
+  getCallBackUrl: (adminKey: string, data: { Key: string }) => request.post(`/admin/GetCallBackUrl?key=${adminKey}`, data),
+
+  // 设置回调地址
+  setCallBackUrl: (adminKey: string, data: { Key: string, Url: string }) => request.post(`/admin/SetCallBackUrl?key=${adminKey}`, data),
 };

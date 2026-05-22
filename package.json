@@ -1,0 +1,9 @@
+{
+  "name": "iwe-root",
+  "private": true,
+  "scripts": {
+    "dev": "npm run dev --prefix iwe-web",
+    "build": "npm run build --prefix iwe-web",
+    "preview": "npm run preview --prefix iwe-web"
+  }
+}

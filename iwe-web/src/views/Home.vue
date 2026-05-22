@@ -1,219 +1,180 @@
 <template>
-  <div class="workbench">
-    <!-- 第一栏：账号栏 -->
-    <div class="column account-bar">
-      <div class="account-list">
-        <div 
-          v-for="acc in accountStore.accounts.filter(a => a.status === 'online')" 
-          :key="acc.uuid"
-          class="account-item"
-          :class="{ active: accountStore.activeAccountUuid === acc.uuid }"
-          @click="accountStore.activeAccountUuid = acc.uuid"
-        >
-          <a-tooltip :content="acc.nickname" position="right">
-            <a-avatar :size="48" shape="square" :style="{ backgroundColor: '#333' }">
-              <img v-if="acc.avatar" :src="acc.avatar" />
-              <template v-else>{{ acc.nickname[0] }}</template>
-            </a-avatar>
-          </a-tooltip>
-        </div>
-        
-        <div class="add-account-btn" @click="handleAddAccount">
-          <div class="icon-plus-wrapper">
-            <icon-plus :size="20" />
-          </div>
-        </div>
-      </div>
-
-      <div class="global-settings-btn" @click="adminVisible = true">
-        <icon-tool :size="20" />
-      </div>
-    </div>
-
-    <!-- 第二栏：功能导航 -->
-    <div class="column nav-bar">
-      <div 
-        class="nav-item" 
-        :class="{ active: activeTab === 'chat' }"
-        @click="activeTab = 'chat'"
-      >
-        <icon-message :size="24" />
-      </div>
-      <div 
-        class="nav-item" 
-        :class="{ active: activeTab === 'contact' }"
-        @click="handleSwitchContact"
-      >
-        <icon-user :size="24" />
-      </div>
-      <div class="nav-item settings-item" @click="adminVisible = true">
-        <icon-settings :size="24" />
-      </div>
-    </div>
+  <div class="workbench" :class="{ 'has-active-chat': !!chatStore.activeId }">
+    <!-- 第一栏与第二栏：侧边栏与功能导航 -->
+    <LeftSidebar
+      v-model:active-tab="activeTab"
+      :pending-account-uuid="pendingAccountUuid"
+      @switch-contact="handleSwitchContact"
+      @switch-account="handleSwitchAccount"
+      @add-account="handleAddAccount"
+      @manual-login="handleManualLogin"
+      @open-global-settings="handleOpenGlobalSettings"
+      @open-personal-settings="handleOpenPersonalSettings"
+      @active-account-manual-check="handleActiveAccountManualCheck"
+    />
 
     <!-- 第三栏：列表展示 -->
-    <div class="column chat-list">
-      <div class="list-search">
-        <a-input-search placeholder="搜索" background-color="#2e2e2e" />
-      </div>
-      
-      <div class="scroll-area">
-        <template v-if="activeTab === 'chat'">
-          <div 
-            v-for="conv in currentConversations" 
-            :key="conv.wxid"
-            class="conv-item"
-            :class="{ active: chatStore.activeId === conv.wxid }"
-            @click="handleSelectChat(conv.wxid)"
-          >
-            <a-badge :count="conv.unread" :dot="false" class="avatar-badge">
-              <a-avatar :size="42" shape="square" :style="{ backgroundColor: '#ffb400' }">
-                <img v-if="conv.avatar" :src="conv.avatar" />
-                <template v-else>{{ conv.nickname ? conv.nickname[0] : 'C' }}</template>
-              </a-avatar>
-            </a-badge>
-            <div class="info">
-              <div class="title">
-                <span class="name">{{ formatText(conv.nickname) }}</span>
-                <span class="time">{{ formatTime(conv.time) }}</span>
-              </div>
-              <div class="desc">{{ formatText(conv.lastMsg) }}</div>
-            </div>
-          </div>
-        </template>
-        
-        <template v-else>
-          <div 
-            v-for="contact in contactList" 
-            :key="getContactId(contact)"
-            class="conv-item"
-            :class="{ active: chatStore.activeId === getContactId(contact) }"
-            @click="handleSelectContact(contact)"
-          >
-            <a-avatar :size="42" shape="square" :style="{ backgroundColor: '#337ecc' }">
-              <img v-if="getContactAvatar(contact)" :src="getContactAvatar(contact)" />
-              <template v-else>{{ getContactName(contact)[0] }}</template>
-            </a-avatar>
-            <div class="info">
-              <div class="title">
-                <span class="name">{{ getContactName(contact) }}</span>
-              </div>
-              <div class="desc">{{ getContactId(contact) }}</div>
-            </div>
-          </div>
-        </template>
-      </div>
-    </div>
+    <ListSidebar
+      :active-tab="activeTab"
+      :active-id="chatStore.activeId"
+      @select-chat="handleSelectChat"
+      @select-contact="handleSelectContact"
+    />
 
     <!-- 第四栏：内容视窗 -->
-    <div class="column chat-window">
-      <template v-if="chatStore.activeId">
-        <div class="chat-header">
-          <div class="title">{{ currentChatPartnerName }}</div>
-        </div>
-        
-        <div class="messages-flow" ref="msgFlow">
-          <div 
-            v-for="msg in currentMessages" 
-            :key="msg.id"
-            class="msg-row"
-            :class="{ self: msg.isSelf }"
-          >
-            <a-avatar :size="36" shape="square">
-              <img v-if="msg.isSelf ? currentAccountAvatar : currentPartnerAvatar" :src="msg.isSelf ? currentAccountAvatar : currentPartnerAvatar" />
-              <template v-else>{{ (msg.isSelf ? 'Me' : currentChatPartnerName[0]) }}</template>
-            </a-avatar>
-            <div class="msg-bubble">
-              <div class="content">{{ msg.content }}</div>
-              <div v-if="msg.isRevoked" class="revoked-tag">消息已撤回</div>
-            </div>
-          </div>
-        </div>
-
-        <div class="input-section">
-          <div class="input-tools">
-            <icon-face-smile-fill :size="20" />
-            <icon-folder :size="20" />
-            <icon-image :size="20" />
-          </div>
-          <textarea 
-            v-model="inputText" 
-            placeholder="请输入消息..." 
-            @keyup.enter.exact="handleSendMessage"
-          ></textarea>
-          <div class="submit-bar">
-            <a-button type="primary" size="small" @click="handleSendMessage">发送(S)</a-button>
-          </div>
-        </div>
-      </template>
-
-      <div v-else class="empty-holder">
-        <icon-message :size="80" />
-        <p class="hint">未选择会话</p>
-      </div>
-    </div>
+    <ChatArea
+      :active-id="chatStore.activeId"
+      :partner-name="currentChatPartnerName"
+      :messages="currentMessages"
+      :self-avatar="currentAccountAvatar"
+      :partner-avatar="currentPartnerAvatar"
+      :active-account-uuid="accountStore.activeAccountUuid"
+      :has-conversations="!!(accountStore.activeAccountUuid && chatStore.accountConversations[accountStore.activeAccountUuid]?.length)"
+      @send-message="handleSendMessage"
+      @add-account="handleAddAccount"
+      @back="chatStore.activeId = ''"
+    />
 
     <!-- 弹窗部分 -->
-    <a-modal v-model:visible="loginVisible" title="添加微信账号" :footer="false" unmount-on-close>
-      <Login :assigned-key="pendingSessionKey" @success="handleLoginSuccess" />
-    </a-modal>
+    <LoginModal
+      v-model:visible="loginVisible"
+      :pending-session-key="pendingSessionKey"
+      @success="handleLoginSuccess"
+    />
 
-    <a-modal v-model:visible="adminVisible" title="系统设置" @ok="handleSaveConfig">
-      <div class="admin-panel">
-        <a-tabs default-active-key="1">
-          <a-tab-pane key="1" title="基础配置">
-            <a-form layout="vertical" style="margin-top: 15px;">
-              <a-form-item label="服务器地址">
-                <a-input v-model="accountStore.baseUrl" placeholder="例如: http://192.168.1.10:8819" />
-              </a-form-item>
-              <a-form-item label="管理密钥">
-                <a-input v-model="accountStore.adminToken" />
-              </a-form-item>
-            </a-form>
-          </a-tab-pane>
-          <a-tab-pane key="2" title="数据管理">
-            <div class="data-mgmt">
-              <div class="stat-item">
-                <span class="label">联系人缓存:</span>
-                <span class="value">{{ cacheStats.count }} 个</span>
-              </div>
-              <div class="stat-item">
-                <span class="label">预估空间占用:</span>
-                <span class="value">{{ cacheStats.size }}</span>
-              </div>
-              <a-divider />
-              <a-popconfirm content="确定清空所有本地数据吗？" @ok="handleClearCache">
-                <a-button type="outline" status="danger" long>清空所有本地数据</a-button>
-              </a-popconfirm>
-            </div>
-          </a-tab-pane>
-        </a-tabs>
-      </div>
-    </a-modal>
+    <SettingsModal
+      v-model:visible="adminVisible"
+      :context="adminPanelContext"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch, nextTick } from 'vue';
+import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
 import { useAccountStore } from '@/store/account';
 import { useChatStore } from '@/store/chat';
 import { socketManager } from '@/utils/socketManager';
-import { messageApi } from '@/api/modules/im';
+import { loginApi, messageApi } from '@/api/modules/im';
+import { adminApi } from '@/api/modules/admin';
 import { Message } from '@arco-design/web-vue';
 import { 
   IconPlus, IconMessage, IconUser, IconSettings, 
-  IconFaceSmileFill, IconFolder, IconImage, IconTool
+  IconFaceSmileFill, IconFolder, IconImage, IconTool,
+  IconThunderbolt, IconCheckCircle, IconSafe, IconCloseCircle,
+  IconImport, IconLeft
 } from '@arco-design/web-vue/es/icon';
 import { contactCache } from '@/utils/contactCache';
-import Login from './Login.vue';
+import ChatArea from '@/components/ChatArea.vue';
+import SettingsModal from '@/components/SettingsModal.vue';
+import LeftSidebar from '@/components/LeftSidebar.vue';
+import ListSidebar from '@/components/ListSidebar.vue';
+import LoginModal from '@/components/LoginModal.vue';
 import dayjs from 'dayjs';
 
+import { isDebug } from '@/utils/debug';
 const accountStore = useAccountStore();
 const chatStore = useChatStore();
-const inputText = ref('');
+
+// --- 基础辅助工具函数（优先提升至初始化顶部，避免 TDZ 问题） ---
+const getContactId = (c: any) => {
+  const user = c.userName || c.UserName || c.wxid;
+  return String((user && typeof user === 'object') ? (user.str || '') : (user || ''));
+};
+
+const getContactName = (c: any) => {
+  const nick = c.nickName || c.NickName || c.nickname;
+  const nickStr = (nick && typeof nick === 'object') ? nick.str : nick;
+  const remark = c.remark || c.Remark;
+  const remarkStr = (remark && typeof remark === 'object') ? remark.str : remark;
+  return remarkStr || nickStr || getContactId(c) || '未知';
+};
+
 const loginVisible = ref(false);
 const adminVisible = ref(false);
+const adminPanelContext = ref<'global' | 'personal'>('global');
+
+const pendingAccountUuid = ref('');
+const activeAccountOnlineStatus = computed(() => {
+  const acc = accountStore.accounts.find(a => a.uuid === accountStore.activeAccountUuid);
+  return acc?.status === 'online' ? '在线' : '离线';
+});
+
+const handleSwitchAccount = async (uuid: string) => {
+  if (accountStore.activeAccountUuid === uuid) return;
+  pendingAccountUuid.value = uuid;
+  
+  let targetUuid = uuid;
+  try {
+    const acc = accountStore.accounts.find(a => a.uuid === uuid);
+    if (acc) {
+      if (!acc.initialized && acc.sessionKey) {
+        acc.initialized = true;
+        Message.info({
+          content: `正在开启并加载账户 [${acc.nickname}]...`,
+          duration: 2
+        });
+        await accountStore.fetchProfileAndFixUuid(acc.sessionKey);
+      }
+      targetUuid = acc.uuid; // fetchProfileAndFixUuid 可能会修正并在 store 中更新该账号的真实 uuid (wxid)
+    }
+
+    // 🚀 核心控制：在切换 activeAccountUuid 之前，预先并行加载目标账号的联系人与会话缓存进入内存
+    // 确保切换后所有依赖 activeAccountUuid 的 computed 属性能够直接同步且完美地加载渲染，杜绝 UI 抖动与临时降级 placeholder 的尴尬
+    await Promise.all([
+      accountStore.loadContactsFromCache(targetUuid),
+      chatStore.loadConversations(targetUuid)
+    ]);
+  } catch (err) {
+    console.warn('[Home] 切换账号时预加载缓存失败:', err);
+  } finally {
+    const acc = accountStore.accounts.find(a => a.uuid === uuid || a.uuid === targetUuid);
+    accountStore.activeAccountUuid = acc ? acc.uuid : targetUuid;
+    pendingAccountUuid.value = '';
+    // 自动重置当前聊天，防跨账号会话串屏
+    chatStore.activeId = '';
+  }
+};
+
+const handleManualCheckOnline = async (acc: any) => {
+  if (!acc.sessionKey) return;
+  try {
+    Message.info(`正在检测账号 ${acc.nickname || '微信'} 的在线状态...`);
+    const isOnline = await accountStore.checkSingleAccountStatus(acc.sessionKey);
+    if (isOnline) {
+      Message.success(`账号 ${acc.nickname || '微信'} 当前已成功上线！`);
+    } else {
+      Message.warning(`账号 ${acc.nickname || '微信'} 当前处于离线状态。`);
+    }
+  } catch (err: any) {
+    Message.error(`状态检测失败: ${err.message || err}`);
+  }
+};
+
+const handleActiveAccountManualCheck = async () => {
+  const acc = accountStore.accounts.find(a => a.uuid === accountStore.activeAccountUuid || a.sessionKey === accountStore.activeAccountUuid);
+  if (!acc) {
+    Message.warning('当前未选择活跃账号');
+    return;
+  }
+  await handleManualCheckOnline(acc);
+};
+
+const handleOpenGlobalSettings = () => {
+  adminPanelContext.value = 'global';
+  adminVisible.value = true;
+};
+
+const handleOpenPersonalSettings = () => {
+  adminPanelContext.value = 'personal';
+  adminVisible.value = true;
+};
+
 const pendingSessionKey = ref('');
+const accountResults = ref<Record<string, any>>({});
+
+// 表单数据绑定
+
+// 管理功能相关
 
 const handleAddAccount = () => {
   // 自动分配一个未使用的槽位 Key
@@ -228,37 +189,75 @@ const handleAddAccount = () => {
   loginVisible.value = true;
 };
 
-const handleLoginSuccess = () => {
+const handleManualLogin = () => {
+  // 1. 如果是个人模式，直接使用个人授权码
+  if (accountStore.tokenKey) {
+    pendingSessionKey.value = accountStore.tokenKey.trim();
+    loginVisible.value = true;
+    return;
+  }
+  
+  // 2. 如果是管理员模式，并且当前选中了一个账号（包括离线账号），直接复用其密钥，不弹窗
+  const activeAcc = accountStore.accounts.find(a => a.uuid === accountStore.activeAccountUuid);
+  if (activeAcc && activeAcc.sessionKey) {
+    pendingSessionKey.value = activeAcc.sessionKey.trim();
+    loginVisible.value = true;
+    return;
+  }
+
+  // 3. 自动分配空闲槽位密钥，避免弹窗
+  const idleAccount = accountStore.accounts.find(a => a.status === 'offline' && a.sessionKey);
+  if (idleAccount) {
+    pendingSessionKey.value = idleAccount.sessionKey.trim();
+    loginVisible.value = true;
+  } else {
+    // 4. 终极兜底：没有任何活跃账号与槽位密钥时，才弹窗请求输入
+    const key = prompt('请输入您的授权码（Auth Code）', '');
+    if (key !== null) {
+      pendingSessionKey.value = key.trim();
+      loginVisible.value = true;
+    }
+  }
+};
+
+const handleLoginSuccess = (data?: any) => {
   loginVisible.value = false;
+  
+  if (data && data.sessionKey) {
+    console.log('[Home] 登录成功，获取到最新 sessionKey:', data.sessionKey);
+    // 如果是单账号模式 (个人模式)，我们需要更新并保存最新 sessionKey 对应的 tokenKey
+    if (accountStore.tokenKey) {
+      accountStore.setGlobalConfig(
+        accountStore.baseUrl,
+        accountStore.adminKey,
+        data.sessionKey,
+        accountStore.debug
+      );
+    }
+  }
+
   accountStore.syncAccountsFromServer();
 };
+
 const activeTab = ref('chat');
-const contactLoading = ref(false);
-const msgFlow = ref<HTMLElement | null>(null);
 
-const cacheStats = ref({ count: 0, size: '0 B' });
-
-// 内存镜像获取联系人
-const contactList = computed(() => Object.values(accountStore.contactMap));
-
-const currentConversations = computed(() => {
-  const accountUuid = accountStore.activeAccountUuid;
-  const convs = chatStore.accountConversations[accountUuid] || [];
-  return convs.map(c => {
-    const detail = accountStore.contactMap[c.wxid];
-    return detail ? {
-      ...c,
-      nickname: getContactName(detail),
-      avatar: getContactAvatar(detail)
-    } : c;
-  });
-});
 
 const currentMessages = computed(() => {
   const accountUuid = accountStore.activeAccountUuid;
   const partnerId = chatStore.activeId;
-  if (!accountUuid || !partnerId) return [];
-  return chatStore.accountMessages[accountUuid]?.[partnerId] || [];
+  if (!accountUuid || accountUuid === 'pending_login' || !partnerId) return [];
+  
+  const messages = chatStore.accountMessages[accountUuid]?.[partnerId] || [];
+  if (isDebug('socket')) {
+    console.log(`[Debug:Home] 试图查找消息: accountUuid=${accountUuid}, partnerId=${partnerId}`);
+    console.log(`[Debug:Home] accountMessages 中已有的 accountUuid 列表:`, Object.keys(chatStore.accountMessages));
+    if (chatStore.accountMessages[accountUuid]) {
+      console.log(`[Debug:Home] 该账号下已有的 partnerId 列表:`, Object.keys(chatStore.accountMessages[accountUuid]));
+    }
+    console.log(`[Debug:Home] 最终查找到的消息数量:`, messages.length);
+  }
+  
+  return messages;
 });
 
 const currentChatPartnerName = computed(() => {
@@ -268,114 +267,136 @@ const currentChatPartnerName = computed(() => {
 
 const currentAccountAvatar = computed(() => {
   const acc = accountStore.accounts.find(a => a.uuid === accountStore.activeAccountUuid);
-  return acc?.avatar || '';
+  if (!acc) return '';
+  return accountStore.getAccountAvatar(acc);
 });
 
 const currentPartnerAvatar = computed(() => {
   const detail = accountStore.contactMap[chatStore.activeId];
-  return detail ? getContactAvatar(detail) : '';
+  if (detail) {
+    return accountStore.getContactAvatar(detail);
+  }
+  return '';
 });
 
-const scrollToBottom = async () => {
-  await nextTick();
-  if (msgFlow.value) msgFlow.value.scrollTop = msgFlow.value.scrollHeight;
-};
-
-watch(currentMessages, () => scrollToBottom(), { deep: true });
 
 watch(() => accountStore.activeAccountUuid, async (newUuid) => {
-  if (newUuid) {
-    await chatStore.loadConversations(newUuid);
-    const acc = accountStore.accounts.find(a => a.uuid === newUuid);
-    if (acc) socketManager.registerAccount(newUuid, acc.sessionKey, newUuid);
+  if (newUuid && newUuid !== 'pending_login') {
+    // 统一使用 userName 作为唯一标识（uuid === userName === 真实微信 ID）
+    const userName = newUuid;
+    
+    await Promise.all([
+      accountStore.loadContactsFromCache(userName),
+      chatStore.loadConversations(userName)
+    ]);
   }
-});
+}, { immediate: true });
 
 const handleSelectChat = async (wxid: string) => {
   chatStore.activeId = wxid;
   const accountUuid = accountStore.activeAccountUuid;
   await chatStore.loadHistory(accountUuid, wxid);
-  // 清除未读
-  const list = chatStore.accountConversations[accountUuid];
-  if (list) {
-    const conv = list.find(c => c.wxid === wxid);
-    if (conv) conv.unread = 0;
-  }
+  // 清除未读并持久化到本地缓存
+  await chatStore.clearUnread(accountUuid, wxid);
 };
 
 const handleSwitchContact = async () => {
+  console.log('[Home] 切换到联系人页');
   activeTab.value = 'contact';
-  const accountUuid = accountStore.activeAccountUuid;
-  const acc = accountStore.accounts.find(a => a.uuid === accountUuid);
-  if (acc) await accountStore.syncFullContactList(accountUuid, acc.sessionKey);
+  
+  // 移除：切换 Tab 时不再自动触发同步，仅依赖本地缓存和手动同步
 };
 
-const handleSendMessage = async () => {
-  if (!inputText.value.trim()) return;
-  const accountUuid = accountStore.activeAccountUuid;
+const handleSendMessage = async (text: string) => {
+  const userName = accountStore.activeAccountUuid;
   const partnerId = chatStore.activeId;
-  const acc = accountStore.accounts.find(a => a.uuid === accountUuid);
+  const acc = accountStore.accounts.find(a => a.uuid === userName);
   if (!acc || !partnerId) return;
 
+  const nowSec = Math.floor(Date.now() / 1000);
+  const msgObj = {
+    id: String(Date.now()),
+    msgId: Date.now(),
+    from: userName,
+    to: partnerId,
+    time: nowSec,
+    type: 'text',
+    content: text,
+    isSelf: true,
+    isRevoked: false
+  };
+
+  if (accountStore.isDemoMode) {
+    // 乐观更新内存消息
+    await chatStore.addParsedMessage(userName, msgObj);
+    
+    // 仿真 1 秒延迟自动回复
+    setTimeout(async () => {
+      let replyContent = '';
+      const replyFrom = partnerId;
+      
+      if (partnerId === 'mock_user_a') {
+        replyContent = `收到您发来的：“${text}”，这就是 IWE 的全内存高流畅度演示！所有操作完全在内存沙箱中进行，切换多账号也是秒开，非常丝滑！`;
+      } else if (partnerId === 'mock_user_b') {
+        replyContent = `收到：“${text}”。防撤回拦截简直是群控利器！我刚才故意撤回了一条关于“机密信息”的消息，你看我的会话里是不是被强力拦截并以红色斜体标记为 [已撤回(拦截)] 了？你在常规微信里是绝对看不到的！`;
+      } else if (partnerId === 'mock_group_c') {
+        replyContent = `王五 (UI/UX设计师)：大家快看，小明刚才说：“${text}”。\n\n赵六 (研发总监)：收到！在 500 人大群里，IWE 的流式多账号同步性能依然能够稳定在满帧运行，这主要得益于我们先连后补的 WebSocket 去重算法。`;
+      } else if (partnerId === 'filehelper') {
+        replyContent = `【IWE 传输助手回执】已接收到您的临时备忘：“${text}”。\n\n[系统备忘] 内存日志已安全写入临时缓存。`;
+      } else if (partnerId === 'gh_official_a') {
+        replyContent = `【自动回复】感谢关注 IWE 官方发布！当前处于完全离线的 DEMO 体验模式下，您发送的“${text}”已被内存模拟服务接收。如需体验真实线上多开，请随时点击左下角齿轮在设置中配置真实服务器和 Key！`;
+      } else {
+        replyContent = `【Demo 自动应答】已接收到您的消息：“${text}”。在 Demo 模式下，系统通过前端内存沙箱进行完美闭环仿真。`;
+      }
+
+      if (partnerId === 'mock_group_c') {
+        // 群聊仿真
+        await chatStore.addParsedMessage(userName, {
+          id: String(Date.now() + 1),
+          msgId: Date.now() + 1,
+          from: 'mock_user_d', // UI设计师 王五
+          to: 'mock_group_c',
+          time: Math.floor(Date.now() / 1000),
+          type: 'text',
+          content: `王五：收到小明发送的“${text}”。多开主控室能做到多账号并发真是强悍！`,
+          isSelf: false,
+          isRevoked: false
+        });
+      } else {
+        await chatStore.addParsedMessage(userName, {
+          id: String(Date.now() + 2),
+          msgId: Date.now() + 2,
+          from: replyFrom,
+          to: userName,
+          time: Math.floor(Date.now() / 1000),
+          type: 'text',
+          content: replyContent,
+          isSelf: false,
+          isRevoked: false
+        });
+      }
+    }, 1000);
+    
+    return;
+  }
+
   try {
-    const text = inputText.value;
-    inputText.value = '';
     await messageApi.sendText(acc.sessionKey, partnerId, text);
-    chatStore.addParsedMessage(accountUuid, {
-      id: String(Date.now()),
-      msgId: Date.now(),
-      from: accountUuid,
-      to: partnerId,
-      time: Math.floor(Date.now() / 1000),
-      type: 'text',
-      content: text,
-      isSelf: true,
-      isRevoked: false
-    });
+    chatStore.addParsedMessage(userName, msgObj);
   } catch (err) {
     Message.error('发送失败');
   }
 };
 
-const loadCacheStats = async () => {
-  cacheStats.value.count = await contactCache.getCount() as number;
-  cacheStats.value.size = await contactCache.getEstimatedSize();
-};
-
-const handleClearCache = async () => {
-  await contactCache.clearAll();
-  Message.success('已清空本地数据');
-  await loadCacheStats();
-};
-
-const handleSaveConfig = () => {
-  accountStore.setGlobalConfig(accountStore.baseUrl, accountStore.adminToken);
-  window.location.reload();
-};
-
-const handleSelectContact = (contact: any) => {
+  const handleSelectContact = (contact: any) => {
   handleSelectChat(getContactId(contact));
   activeTab.value = 'chat';
 };
 
-const getContactId = (c: any) => {
-  const user = c.userName || c.UserName || c.wxid;
-  return (user && typeof user === 'object') ? (user.str || '') : (user || '');
-};
+// Note: getContactId and getContactName have been hoisted to the top of script setup to prevent temporal dead zone issues.
 
-const getContactName = (c: any) => {
-  const nick = c.nickName || c.NickName || c.nickname;
-  const nickStr = (nick && typeof nick === 'object') ? nick.str : nick;
-  const remark = c.remark || c.Remark;
-  const remarkStr = (remark && typeof remark === 'object') ? remark.str : remark;
-  return remarkStr || nickStr || getContactId(c) || '未知';
-};
-
-const getContactAvatar = (c: any) => {
-  const url = c.smallHeadImgUrl || c.SmallHeadImgUrl || c.headImgUrl || c.HeadImgUrl || c.avatar || '';
-  return typeof url === 'string' ? url.trim().replace(/`/g, '') : '';
-};
-
+// 账号头像：优先从联系人缓存取（已有本地 blob），回退到 acc.avatar
+// (watch removed to prevent eager avatar fetching for all contacts)
 const formatTime = (t: number) => t ? dayjs(t * 1000).format('HH:mm') : '';
 const formatText = (text: any) => {
   if (typeof text === 'object') return text.str || text.Str || JSON.stringify(text);
@@ -385,48 +406,17 @@ const formatText = (text: any) => {
 watch(adminVisible, (v) => v && loadCacheStats());
 
 onMounted(async () => {
+  accountStore.startStatusPolling();
   document.body.setAttribute('arco-theme', 'dark');
-  await accountStore.loadContactsFromCache();
-  if (accountStore.adminToken) await accountStore.syncAccountsFromServer();
+  // 只要有管理密钥或授权码，就同步账号
+  if (accountStore.adminKey || accountStore.tokenKey) {
+    await accountStore.syncAccountsFromServer();
+  }
+});
+
+onUnmounted(() => {
+  accountStore.stopStatusPolling();
 });
 </script>
 
-<style scoped>
-.workbench { display: flex; height: 100vh; width: 100vw; overflow: hidden; background: #171717; color: #e5e6eb; }
-.column { height: 100%; display: flex; flex-direction: column; }
-.account-bar { width: 68px; background: #0a0a0a; align-items: center; padding: 20px 0; border-right: 1px solid #2e2e2e; }
-.account-list { flex: 1; display: flex; flex-direction: column; align-items: center; width: 100%; }
-.account-item { margin-bottom: 18px; cursor: pointer; transition: all 0.3s; padding: 0 4px; }
-.account-item.active { border-left: 4px solid #07c160; }
-.add-account-btn { cursor: pointer; color: #86909c; margin-bottom: 20px; }
-.icon-plus-wrapper { background: #2e2e2e; padding: 8px; border-radius: 4px; }
-.nav-bar { width: 60px; background: #1e1e1e; align-items: center; padding: 25px 0; border-right: 1px solid #2e2e2e; }
-.nav-item { color: #919191; margin-bottom: 30px; cursor: pointer; }
-.nav-item.active { color: #07c160; }
-.settings-item { margin-top: auto; }
-.chat-list { width: 280px; background: #232323; border-right: 1px solid #2e2e2e; }
-.list-search { padding: 15px; }
-.scroll-area { flex: 1; overflow-y: auto; }
-.conv-item { display: flex; padding: 12px 15px; cursor: pointer; border-bottom: 1px solid #2e2e2e; }
-.conv-item.active { background: #333333; }
-.conv-item .info { flex: 1; margin-left: 12px; overflow: hidden; }
-.conv-item .title { display: flex; justify-content: space-between; margin-bottom: 4px; }
-.conv-item .name { font-weight: 500; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.conv-item .time { font-size: 12px; color: #86909c; }
-.conv-item .desc { font-size: 12px; color: #86909c; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chat-window { flex: 1; background: #1a1a1a; display: flex; flex-direction: column; }
-.chat-header { height: 60px; border-bottom: 1px solid #2e2e2e; display: flex; align-items: center; padding: 0 20px; }
-.messages-flow { flex: 1; overflow-y: auto; padding: 20px; }
-.msg-row { display: flex; margin-bottom: 20px; }
-.msg-row.self { flex-direction: row-reverse; }
-.msg-bubble { max-width: 70%; padding: 10px 14px; border-radius: 8px; background: #2e2e2e; margin: 0 12px; }
-.self .msg-bubble { background: #268d44; color: #fff; }
-.input-section { height: 160px; border-top: 1px solid #2e2e2e; display: flex; flex-direction: column; }
-.input-tools { height: 40px; display: flex; padding: 0 15px; gap: 15px; align-items: center; color: #86909c; }
-.input-section textarea { flex: 1; border: none; padding: 10px 15px; background: transparent; color: #e5e6eb; outline: none; resize: none; }
-.submit-bar { height: 40px; display: flex; justify-content: flex-end; padding: 0 15px; }
-.empty-holder { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; opacity: 0.3; }
-.data-mgmt { padding: 10px 0; }
-.stat-item { display: flex; justify-content: space-between; margin-bottom: 10px; }
-.avatar-badge :deep(.arco-badge-status-dot) { width: 8px; height: 8px; }
-</style>
+<style src="./Home.css"></style>

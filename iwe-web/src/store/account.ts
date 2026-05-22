@@ -1,8 +1,44 @@
 import { defineStore } from 'pinia';
-import { adminApi } from '@/api/modules/admin';
-import { messageApi } from '@/api/modules/im';
-import { socketManager } from '@/utils/socketManager';
-import { contactCache } from '@/utils/contactCache';
+import { useChatStore } from './chat';
+import { syncDebugConfig } from '@/utils/debug';
+
+// 引入垂直业务外部解耦模块
+import {
+  extractAvatarString,
+  getAvatarUrl,
+  getContactAvatar,
+  getAccountAvatar
+} from './account/utils';
+
+import {
+  autoSave62Data,
+  syncAccountsFromServer,
+  checkSingleAccountStatus,
+  fetchProfileAndFixUuid,
+  preloadOfflineAccountAvatars,
+  getEffectiveAvatarConfig,
+  isRedisMode,
+  resolveRedisUrl
+} from './account/profile';
+
+import {
+  loadContactsFromCache,
+  updateContact,
+  checkFriendRelation,
+  forceUpdateContactDetails,
+  deleteContact,
+  syncFullContactList,
+  enqueueContactDetails,
+  processDetailsQueue
+} from './account/contacts';
+
+import {
+  fillContactsFromRedis,
+  syncViaRedis,
+  triggerDebouncedRedisSync,
+  triggerDebouncedRedisWriteback,
+  saveAllContactsToRedis
+} from './account/redis';
 
 interface Account {
   uuid: string;
@@ -10,119 +46,239 @@ interface Account {
   nickname: string;
   avatar: string;
   status: 'online' | 'offline';
+  alias?: string;
+  initialized?: boolean;
+}
+
+interface DebugConfig {
+  all: boolean;
+  request: boolean;
+  socket: boolean;
+  cache: boolean;
+  parser: boolean;
+}
+
+interface AvatarConfig {
+  downloadEnabled: boolean;
+  cacheEnabled: boolean;
+  isRedisLanMode: boolean;
+  redisWriteBackUrl?: string;
+  maxMessagesPerConv?: number;
+  msgTtlDays?: number;
 }
 
 export const useAccountStore = defineStore('account', {
-  state: () => ({
-    // 统一键名
-    adminToken: localStorage.getItem('adminToken') || '',
-    baseUrl: localStorage.getItem('baseUrl') || '',
+  state: () => {
+    const isDemoMode = localStorage.getItem('isDemoMode') === 'true';
+    return {
+      isDemoMode,
+      adminKey: isDemoMode ? '' : (localStorage.getItem('ADMIN_KEY') || ''),
+      tokenKey: isDemoMode ? '' : (localStorage.getItem('TOKEN_KEY') || ''),
+      baseUrl: isDemoMode ? '' : (localStorage.getItem('baseUrl') || localStorage.getItem('iwe_base_url') || ''),
+      debug: (() => {
+      try {
+        const config = JSON.parse(localStorage.getItem('debug_config') || '{}');
+        return {
+          all: !!config.all,
+          request: !!config.request,
+          socket: !!config.socket,
+          cache: !!config.cache,
+          parser: !!config.parser
+        };
+      } catch (e) {
+        return { all: false, request: false, socket: false, cache: false, parser: false };
+      }
+    })() as DebugConfig,
+    globalAvatarConfig: (() => {
+      try {
+        const config = JSON.parse(localStorage.getItem('avatar_config') || '{}');
+        return {
+          downloadEnabled: config.downloadEnabled !== false,
+          cacheEnabled: config.cacheEnabled !== false,
+          isRedisLanMode: config.isRedisLanMode !== false,
+          redisWriteBackUrl: config.redisWriteBackUrl || '',
+          maxMessagesPerConv: config.maxMessagesPerConv !== undefined ? Number(config.maxMessagesPerConv) : 500,
+          msgTtlDays: config.msgTtlDays !== undefined ? Number(config.msgTtlDays) : 0
+        };
+      } catch (e) {
+        return { downloadEnabled: true, cacheEnabled: true, isRedisLanMode: true, redisWriteBackUrl: '', maxMessagesPerConv: 500, msgTtlDays: 0 };
+      }
+    })() as AvatarConfig,
+    accountConfigs: (() => {
+      try {
+        return JSON.parse(localStorage.getItem('account_avatar_configs') || '{}');
+      } catch (e) {
+        return {};
+      }
+    })() as Record<string, AvatarConfig>,
     accounts: [] as Account[],
     activeAccountUuid: '',
-    // 内存镜像：wxid -> contactDetail
-    contactMap: {} as Record<string, any>
-  }),
+    detailsQueue: [] as string[],
+    isProcessingQueue: false,
+    lastSyncTimeMap: {} as Record<string, number>,
+    syncLockMap: {} as Record<string, boolean>,
+    accountContactMaps: {} as Record<string, Record<string, any>>,
+    isContactListLoadedMap: {} as Record<string, boolean>,
+    avatarBlobMap: {} as Record<string, string>,
+    _statusTimer: null as any
+    };
+  },
+
+  getters: {
+    contactMap(state): Record<string, any> {
+      return state.accountContactMaps[state.activeAccountUuid] || {};
+    }
+  },
 
   actions: {
-    setGlobalConfig(url: string, token: string) {
+    // 1. 静态数据延迟懒加载模块
+    async loadDemoData() {
+      const chatStore = useChatStore();
+      const { populateDemoData } = await import('./demoMockData');
+      populateDemoData(this, chatStore);
+    },
+
+    // 2. 轮询及管理代理
+    startStatusPolling() {
+      if (this._statusTimer) {
+        clearInterval(this._statusTimer);
+        this._statusTimer = null;
+      }
+    },
+    stopStatusPolling() {
+      if (this._statusTimer) {
+        clearInterval(this._statusTimer);
+        this._statusTimer = null;
+      }
+    },
+    async autoSave62Data(license: string) {
+      return autoSave62Data(this, license);
+    },
+    setGlobalConfig(url: string, adminKey: string, tokenKey: string, debug: any) {
       this.baseUrl = url;
-      this.adminToken = token;
+      this.adminKey = adminKey;
+      this.tokenKey = tokenKey;
+      this.debug = typeof debug === 'boolean' ? { ...this.debug, all: debug } : debug;
       localStorage.setItem('baseUrl', url);
-      localStorage.setItem('adminToken', token);
+      localStorage.setItem('ADMIN_KEY', adminKey);
+      localStorage.setItem('TOKEN_KEY', tokenKey);
+      localStorage.setItem('debug_config', JSON.stringify(this.debug));
+      syncDebugConfig(this.debug);
+    },
+    updateDebugConfig(config: Partial<DebugConfig>) {
+      this.debug = { ...this.debug, ...config };
+      localStorage.setItem('debug_config', JSON.stringify(this.debug));
+      syncDebugConfig(this.debug);
+    },
+    updateAvatarConfig(config: Partial<AvatarConfig>, isGlobal = false) {
+      if (isGlobal || !this.activeAccountUuid) {
+        this.globalAvatarConfig = { ...this.globalAvatarConfig, ...config };
+        localStorage.setItem('avatar_config', JSON.stringify(this.globalAvatarConfig));
+      } else {
+        const current = this.accountConfigs[this.activeAccountUuid] || { ...this.globalAvatarConfig };
+        this.accountConfigs[this.activeAccountUuid] = { ...current, ...config };
+        localStorage.setItem('account_avatar_configs', JSON.stringify(this.accountConfigs));
+      }
+      if (config.redisWriteBackUrl !== undefined) {
+        this.triggerDebouncedRedisSync();
+      }
     },
 
-    // 账号管理
+    // 3. 配置解析及极速模式判定代理
+    getEffectiveAvatarConfig(uuid?: string) {
+      return getEffectiveAvatarConfig(this, uuid);
+    },
+    resolveRedisUrl(uuid: string, apiPath: string): string {
+      return resolveRedisUrl(this, uuid, apiPath);
+    },
+    isRedisMode(uuid?: string): boolean {
+      return isRedisMode(this, uuid);
+    },
+
+    // 4. Redis 核心数据同步代理
+    triggerDebouncedRedisSync() {
+      return triggerDebouncedRedisSync(this);
+    },
+    fillContactsFromRedis(accountUuid: string, modContacts: any[]) {
+      return fillContactsFromRedis(this, accountUuid, modContacts);
+    },
+    async syncViaRedis(uuid: string, key: string) {
+      return syncViaRedis(this, uuid, key);
+    },
+    triggerDebouncedRedisWriteback(uuid: string) {
+      return triggerDebouncedRedisWriteback(this, uuid);
+    },
+    async saveAllContactsToRedis(uuid: string) {
+      return saveAllContactsToRedis(this, uuid);
+    },
+
+    // 5. 个人资料、身份修正及自身头像预加载代理
+    async preloadOfflineAccountAvatars() {
+      return preloadOfflineAccountAvatars(this);
+    },
     async syncAccountsFromServer() {
-      try {
-        const res: any = await adminApi.getOnlineAccounts();
-        console.log('[AccountStore] 获取到原始账号数据:', res);
-        const data = res.Data || res;
-        this.accounts = (Array.isArray(data) ? data : []).map((acc: any) => {
-          const uuid = acc.wx_id || acc.uuid || acc.wxid || acc.UserName;
-          const key = acc.license || acc.key || acc.session_key;
-          return {
-            uuid: uuid || '', // 允许为空槽位
-            sessionKey: key,
-            nickname: acc.nick_name || acc.nickname || (uuid ? '已登录' : '未登录槽位'),
-            avatar: acc.avatar || '',
-            status: uuid ? 'online' : 'offline'
-          };
-        });
-        
-        console.log(`[AccountStore] 账号列表已更新，包含 ${this.accounts.length} 个槽位`);
-
-        // 核心修复：仅注册有有效 UUID 的账号
-        this.accounts.forEach(acc => {
-          if (acc.uuid) {
-            console.log(`[AccountStore] 正在为已登录账号注册同步: ${acc.uuid}`);
-            socketManager.registerAccount(acc.uuid, acc.sessionKey, acc.uuid);
-          }
-        });
-      } catch (err) {
-        console.error('获取账号列表失败:', err);
-      }
+      return syncAccountsFromServer(this);
+    },
+    async checkSingleAccountStatus(license: string): Promise<boolean> {
+      return checkSingleAccountStatus(this, license);
+    },
+    async fetchProfileAndFixUuid(license: string) {
+      return fetchProfileAndFixUuid(this, license);
     },
 
-    // 核心：内存镜像管理
-    async loadContactsFromCache() {
-      const all = await contactCache.getAll();
-      const map: Record<string, any> = {};
-      all.forEach((c: any) => {
-        const wxid = c.userName?.str || c.UserName?.str || c.wxid || c.userName;
-        if (wxid) map[wxid] = c;
-      });
-      this.contactMap = map;
-      console.log(`[AccountStore] 内存镜像已加载 ${Object.keys(map).length} 个联系人`);
+    // 6. 好友、本地缓存及分页拉取代理
+    async loadContactsFromCache(accountUuid?: string) {
+      return loadContactsFromCache(this, accountUuid);
+    },
+    async updateContact(wxid: string, detail: any, accountUuid?: string, triggerAutoFetch = true) {
+      return updateContact(this, wxid, detail, accountUuid, triggerAutoFetch);
+    },
+    async checkFriendRelation(username: string) {
+      return checkFriendRelation(this, username);
+    },
+    async forceUpdateContactDetails(username: string) {
+      return forceUpdateContactDetails(this, username);
+    },
+    async deleteContact(username: string) {
+      return deleteContact(this, username);
+    },
+    async syncFullContactList(uuid: string, key: string, force = false) {
+      return syncFullContactList(this, uuid, key, force);
     },
 
-    async updateContact(wxid: string, detail: any) {
-      if (!wxid) return;
-      // 更新内存
-      this.contactMap[wxid] = { ...this.contactMap[wxid], ...detail };
-      // 更新 DB
-      await contactCache.set(wxid, detail);
+    // 7. 详情静默补充队列代理
+    enqueueContactDetails(wxids: string | string[], accountUuid?: string) {
+      return enqueueContactDetails(this, wxids, accountUuid);
+    },
+    async processDetailsQueue() {
+      return processDetailsQueue(this);
     },
 
-    // 增量补全通讯录
-    async syncFullContactList(uuid: string, key: string) {
-      try {
-        let currentContactSeq = 0;
-        let currentChatRoomSeq = 0;
-        let allCleanIds: string[] = [];
-        let hasMore = true;
-
-        while (hasMore) {
-          const res: any = await messageApi.getContactList(key, currentContactSeq, currentChatRoomSeq);
-          const data = res.Data || res;
-          const userList = data.UsernameList || [];
-          
-          allCleanIds = [...allCleanIds, ...userList];
-          currentContactSeq = data.CurrentWxcontactSeq;
-          currentChatRoomSeq = data.CurrentChatRoomContactSeq;
-
-          if (userList.length === 0 || (currentContactSeq === 0 && currentChatRoomSeq === 0)) {
-            hasMore = false;
-          }
+    // 8. 辅助工具及内存清理代理
+    async getAvatarUrl(url: string) {
+      return getAvatarUrl(url);
+    },
+    getContactAvatar(c: any): string {
+      return getContactAvatar(c);
+    },
+    getAccountAvatar(acc: any): string {
+      return getAccountAvatar(this, acc);
+    },
+    clearMemoryAll(userName?: string) {
+      if (userName) {
+        delete this.lastSyncTimeMap[userName];
+        delete this.syncLockMap[userName];
+        delete this.isContactListLoadedMap[userName];
+        if (this.accountContactMaps[userName]) {
+          this.accountContactMaps[userName] = {};
         }
-
-        // 批量补全详情
-        const batchSize = 50;
-        for (let i = 0; i < allCleanIds.length; i += batchSize) {
-          const batch = allCleanIds.slice(i, i + batchSize);
-          const needFetch = batch.filter(id => !this.contactMap[id]);
-          
-          if (needFetch.length > 0) {
-            const details: any = await messageApi.getContactDetailsList(key, needFetch);
-            const detailList = details.Data || details || [];
-            for (const d of detailList) {
-              const wxid = d.userName?.str || d.UserName?.str || d.wxid || d.userName;
-              await this.updateContact(wxid, d);
-            }
-          }
-        }
-      } catch (err) {
-        console.error('通讯录同步失败:', err);
+      } else {
+        this.lastSyncTimeMap = {};
+        this.syncLockMap = {};
+        this.isContactListLoadedMap = {};
+        this.accountContactMaps = {};
       }
+      console.log("[AccountStore] 已成功清除内存中" + (userName ? '指定账号 ' + userName : '所有账号') + "的同步锁、同步时间及联系人镜像");
     }
   }
 });
