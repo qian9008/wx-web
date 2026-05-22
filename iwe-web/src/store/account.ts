@@ -55,6 +55,7 @@ interface DebugConfig {
   request: boolean;
   socket: boolean;
   cache: boolean;
+  parser: boolean;
 }
 
 interface AvatarConfig {
@@ -81,10 +82,11 @@ export const useAccountStore = defineStore('account', {
           all: !!config.all,
           request: !!config.request,
           socket: !!config.socket,
-          cache: !!config.cache
+          cache: !!config.cache,
+          parser: !!config.parser
         };
       } catch (e) {
-        return { all: false, request: false, socket: false, cache: false };
+        return { all: false, request: false, socket: false, cache: false, parser: false };
       }
     })() as DebugConfig,
     globalAvatarConfig: (() => {

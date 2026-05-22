@@ -9,8 +9,8 @@
   >
     <Login :assigned-key="pendingSessionKey" @success="handleLoginSuccess" />
     
-    <!-- 只有在拥有活跃的个人授权码时，才显示高级操作，方便免签登录或维护 -->
-    <template v-slot:default v-if="accountStore.tokenKey">
+    <!-- 只有在拥有活跃的个人授权码且账号在线时，才显示高级操作，方便免签登录或维护 -->
+    <template v-slot:default v-if="accountStore.tokenKey && isOnline">
       <a-divider style="margin: 20px 0 15px 0;">高级操作</a-divider>
       <a-form :model="accountStore.getEffectiveAvatarConfig()" layout="vertical" style="padding: 0 12px;">
         <a-form-item label="在线状态">
@@ -44,7 +44,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, computed } from 'vue';
 import { useAccountStore } from '@/store/account';
 import { loginApi } from '@/api/modules/im';
 import { Message } from '@arco-design/web-vue';
@@ -58,7 +58,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'update:visible', val: boolean): void;
-  (e: 'success'): void;
+  (e: 'success', data?: any): void;
 }>();
 
 const accountStore = useAccountStore();
@@ -68,8 +68,15 @@ const currentAccountResult = ref('');
 const extract62Loading = ref(false);
 const extracted62Data = ref('');
 
-const handleLoginSuccess = () => {
-  emit('success');
+const isOnline = computed(() => {
+  const uuid = accountStore.activeAccountUuid;
+  if (!uuid) return false;
+  const acc = accountStore.accounts.find(a => a.uuid === uuid || a.sessionKey === uuid);
+  return acc?.status === 'online';
+});
+
+const handleLoginSuccess = (data?: any) => {
+  emit('success', data);
 };
 
 const handleAccountStatusActionForCurrent = async (action: string) => {

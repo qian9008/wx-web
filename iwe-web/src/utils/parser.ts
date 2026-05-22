@@ -2,6 +2,8 @@
  * 消息解析器：将后端的 XML/JSON 结构转换为前端通用的 AppMessage
  */
 
+import { isDebug } from './debug';
+
 export interface AppMessage {
   id: string;
   msgId: number;
@@ -140,7 +142,9 @@ export class MessageParser {
     else if (msgType === 34) {
       msg.type = 'voice';
       msg.content = '[语音]';
-      console.log('[Parser] 语音消息原始 content:', content);
+      if (isDebug('parser')) {
+        console.log('[Parser] 语音消息原始 content:', content);
+      }
       
       if (content.includes('<voicemsg')) {
         try {

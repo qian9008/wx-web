@@ -320,7 +320,7 @@
                   />
                 </a-form-item>
               </a-col>
-              <a-col :span="6">
+              <a-col :span="4">
                 <a-form-item label="通信日志 (Socket)">
                   <a-switch 
                     :model-value="accountStore.debug.socket" 
@@ -328,11 +328,19 @@
                   />
                 </a-form-item>
               </a-col>
-              <a-col :span="6">
+              <a-col :span="4">
                 <a-form-item label="缓存日志 (Cache)">
                   <a-switch 
                     :model-value="accountStore.debug.cache" 
                     @update:model-value="(val: any) => accountStore.updateDebugConfig({ cache: val })" 
+                  />
+                </a-form-item>
+              </a-col>
+              <a-col :span="4">
+                <a-form-item label="解析日志 (Parser)">
+                  <a-switch 
+                    :model-value="accountStore.debug.parser" 
+                    @update:model-value="(val: any) => accountStore.updateDebugConfig({ parser: val })" 
                   />
                 </a-form-item>
               </a-col>

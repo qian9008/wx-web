@@ -222,8 +222,22 @@ const handleManualLogin = () => {
   }
 };
 
-const handleLoginSuccess = () => {
+const handleLoginSuccess = (data?: any) => {
   loginVisible.value = false;
+  
+  if (data && data.sessionKey) {
+    console.log('[Home] 登录成功，获取到最新 sessionKey:', data.sessionKey);
+    // 如果是单账号模式 (个人模式)，我们需要更新并保存最新 sessionKey 对应的 tokenKey
+    if (accountStore.tokenKey) {
+      accountStore.setGlobalConfig(
+        accountStore.baseUrl,
+        accountStore.adminKey,
+        data.sessionKey,
+        accountStore.debug
+      );
+    }
+  }
+
   accountStore.syncAccountsFromServer();
 };
 
