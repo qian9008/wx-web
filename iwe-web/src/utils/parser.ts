@@ -3,32 +3,7 @@
  */
 
 import { isDebug } from './debug';
-
-export interface AppMessage {
-  id: string;
-  msgId: number;
-  from: string;
-  to: string;
-  time: number;
-  type: 'text' | 'image' | 'voice' | 'video' | 'system' | 'status_notify' | 'unsupported';
-  content: string;
-  isSelf: boolean;
-  isRevoked: boolean;
-  rawXml?: string;
-  imageUrl?: string;
-  statusNotifyData?: {
-    username: string;
-    lastMessageSvrId: string;
-    msgCreateTime: number;
-  };
-  voiceBufId?: string;
-  voiceLength?: number;
-  voiceUrl?: string;
-  voiceAesKey?: string;
-  voiceCdnUrl?: string;
-  voiceFormat?: number;
-  voiceBuffer?: string; // img_buf.buffer base64 (已内嵌在 WS 消息中的裸 SILK 数据)
-}
+import type { AppMessage } from '@/types/chat';
 
 export class MessageParser {
   private static parser = new DOMParser();

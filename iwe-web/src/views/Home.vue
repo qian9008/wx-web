@@ -403,7 +403,7 @@ const formatText = (text: any) => {
   return String(text || '');
 };
 
-watch(adminVisible, (v) => v && loadCacheStats());
+watch(adminVisible, (v) => v && console.log('[Home] Settings opened'));
 
 onMounted(async () => {
   accountStore.startStatusPolling();

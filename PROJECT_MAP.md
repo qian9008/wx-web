@@ -1,3 +1,66 @@
-1. 核心功能目录说明
-2. “公共轮子”清单
-3. 数据结构/变量字典
+# PROJECT_MAP - 项目 Wiki & 架构全景
+
+## 1. 核心功能目录说明
+*   `iwe-web/src/api`: 接口定义层，包含 `admin` (管理接口) 和 `im` (即时通讯相关接口)。
+*   `iwe-web/src/components`: 业务组件库。
+    *   `config/`: 后台管理与扫码登录相关组件。
+    *   `login/`: 包含 62 数据提取、二维码登录、唤醒登录等多种登录逻辑组件。
+    *   核心 UI: `ChatArea.vue` (聊天主区), `ListSidebar.vue` (会话列表), `LeftSidebar.vue` (功能导航)。
+*   `iwe-web/src/composables`: 组合式 API (Hooks)，如 `useVoicePlayer` 处理语音播放。
+*   `iwe-web/src/store`: 状态管理中心 (Pinia)。
+    *   `account/`: 模块化的账号管理逻辑（资料、联系人、Redis 同步分而治之）。
+    *   `chat.ts`: 聊天记录、会话列表的核心流转逻辑。
+*   `iwe-web/src/types`: 统一类型定义层，包含 `chat.ts` 等。
+*   `iwe-web/src/utils`: 工具函数集，包含网络请求、加密解析、缓存管理等。
+*   `iwe-web/src/views`: 页面入口（登录页、主页、配置页）。
+
+## 2. “公共轮子”清单
+### 核心工具 (Utils)
+*   `request.ts`: 基于 Axios 封装，自动注入 `key` 参数，处理 `Code/Data` 响应外壳。
+*   `contactCache.ts`: **核心持久化方案**，基于 IndexedDB 封装，支持过期清理 (TTL) 和基于 `partnerType` 索引的高效批量清理。
+*   `socketManager.ts`: WebSocket 连接生命周期管理器，负责重连、补位轮询和历史补录调度。
+*   `messageDispatcher.ts`: **消息分发枢纽**，负责原始协议特征识别、消息类型判定及业务逻辑路由。
+*   `structures.ts`: 通用数据结构工具，如 `BoundedSet` (有界去重集合) 和 `binaryInsert` (二分插入算法)。
+*   `parser.ts`: 消息内容解析器（XML/JSON 转换）。
+*   `wx62.ts`: 专门处理微信 62 数据格式的工具。
+
+### 业务钩子 (Hooks/Composables)
+*   `useVoicePlayer.ts`: 处理 SILK 等音频格式的解码与播放逻辑。
+
+## 3. 数据结构/变量字典
+### 核心数据模型 (Types: `src/types/chat.ts`)
+*   `AppMessage`: 消息对象
+    - `id`: 唯一标识 (字符串)
+    - `msgId`: 微信原始消息 ID
+    - `type`: 消息类型 (text, image, voice, etc.)
+    - `content`: 消息文本或解析后的内容
+    - `isSelf`: 是否本人发送
+    - `partnerId`: 归属的对话伙伴 ID
+    - `partnerType`: 伙伴类型 (`individual` | `chatroom` | `official`)
+*   `Conversation`: 会话摘要
+    - `wxid`: 联系人唯一 ID
+    - `nickname`: 显示名称
+    - `unread`: 未读计数
+*   `Account`: 微信账号对象
+    - `uuid`: 内部维护的唯一 ID
+    - `status`: 在线/离线状态 (`online` | `offline`)
+
+### 数据库表结构 (IndexedDB: `iwe_cache`)
+*   `contacts`: 存储联系人详情，主键 `uid_wxid` (账号Uuid + 联系人wxid)。
+*   `messages`: 存储历史消息，核心索引：`account_partner` (加速单聊加载), `partnerType` (加速分类清理)。
+*   `conversations`: 存储会话列表快照，索引：`accountUuid`。
+*   `avatars`: 头像 Base64 缓存。
+
+### 全局状态 (Pinia Store)
+*   `AccountStore`: 
+    - `accounts`: 当前加载的所有账号列表。
+    - `accountContactMaps`: 内存中的联系人查找表，按 `accountUuid` 隔离。
+*   `ChatStore`:
+    - `accountMessages`: 内存中的消息记录，采用 `BoundedSet` (默认 2000 条) 进行去重。
+    - `accountConversations`: 内存中的会话列表镜像。
+
+## 4. 核心逻辑设计决策
+*   **极速模式 (Redis Mode)**: 当配置了 Redis 且开启该模式时，系统会跳过本地 IndexedDB 写入，直接从 Redis 读写聊天记录。
+*   **分发器解耦**: `SocketManager` 只负责连接维护，具体的消息预处理、联系人同步拦截、去重、解析分发全部交由 `MessageDispatcher` 处理。
+*   **索引清理优化**: 在 IndexedDB 的 `messages` 表中引入 `partnerType` 索引，使群消息和公众号消息的批量清理从“全表扫描”优化为“索引定向扫描”，显著提升性能。
+*   **二分插入有序流**: 消息进入内存 Store 时使用二分查找插入，确保消息流在内存中始终有序，且性能为 O(log n)。

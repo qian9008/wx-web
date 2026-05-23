@@ -4,6 +4,17 @@
   "scripts": {
     "dev": "npm run dev --prefix iwe-web",
     "build": "npm run build --prefix iwe-web",
-    "preview": "npm run preview --prefix iwe-web"
+    "preview": "npm run preview --prefix iwe-web",
+    "prepare": "husky",
+    "type-check": "npm run type-check --prefix iwe-web"
+  },
+  "lint-staged": {
+    "iwe-web/src/**/*.{js,ts,vue}": [
+      "echo 'Pre-commit check: Staged files found, skipping slow full build...'"
+    ]
+  },
+  "devDependencies": {
+    "husky": "^9.1.7",
+    "lint-staged": "^17.0.5"
   }
 }

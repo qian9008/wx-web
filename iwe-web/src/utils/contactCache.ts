@@ -1,12 +1,12 @@
 const DB_NAME = 'iwe_cache';
-const DB_VERSION = 7; // v7: CONV_STORE 添加 accountUuid 索引，MSG_STORE 添加 partnerId 索引
+const DB_VERSION = 8; // v8: 为 MSG_STORE 添加 partnerType 索引
 const STORE_NAME = 'contacts';
 const MSG_STORE = 'messages';
 const CONV_STORE = 'conversations';
 import { isDebug } from './debug';
 const AVATAR_STORE = 'avatars';
 
-// Fix #9: 每个会话最多保留的消息条数（FIFO 淘汰）
+// 每个会话最多保留的消息条数（FIFO 淘汰）
 const MAX_MESSAGES_PER_CONV = 500;
 // 头像缓存有效期：30天
 const AVATAR_TTL = 30 * 24 * 60 * 60 * 1000;
@@ -37,34 +37,34 @@ export const contactCache = {
         }
 
         // contacts store
-        if (db.objectStoreNames.contains(STORE_NAME)) {
-          db.deleteObjectStore(STORE_NAME);
+        if (!db.objectStoreNames.contains(STORE_NAME)) {
+          const contactStore = db.createObjectStore(STORE_NAME, { keyPath: 'uid_wxid' });
+          contactStore.createIndex('accountUuid', 'accountUuid', { unique: false });
         }
-        const contactStore = db.createObjectStore(STORE_NAME, { keyPath: 'uid_wxid' });
-        contactStore.createIndex('accountUuid', 'accountUuid', { unique: false });
 
         // messages store
         if (!db.objectStoreNames.contains(MSG_STORE)) {
           const msgStore = db.createObjectStore(MSG_STORE, { keyPath: 'id' });
           msgStore.createIndex('account_partner', ['accountUuid', 'partnerId'], { unique: false });
           msgStore.createIndex('time', 'time', { unique: false });
-          // Fix #11: 添加 partnerId 索引，加速按类型批量删除
           msgStore.createIndex('partnerId', 'partnerId', { unique: false });
-        } else if (oldVersion < 7) {
-          // 升级已存在的 MSG_STORE：添加缺失索引
+          msgStore.createIndex('partnerType', 'partnerType', { unique: false });
+        } else {
           const tx = (e.target as IDBOpenDBRequest).transaction!;
           const msgStore = tx.objectStore(MSG_STORE);
           if (!msgStore.indexNames.contains('partnerId')) {
             msgStore.createIndex('partnerId', 'partnerId', { unique: false });
           }
+          if (!msgStore.indexNames.contains('partnerType')) {
+            msgStore.createIndex('partnerType', 'partnerType', { unique: false });
+          }
         }
 
-        // Fix #3: conversations store 添加 accountUuid 索引
-        if (db.objectStoreNames.contains(CONV_STORE)) {
-          db.deleteObjectStore(CONV_STORE);
+        // conversations store
+        if (!db.objectStoreNames.contains(CONV_STORE)) {
+          const convStore = db.createObjectStore(CONV_STORE, { keyPath: 'uid_partner' });
+          convStore.createIndex('accountUuid', 'accountUuid', { unique: false });
         }
-        const convStore = db.createObjectStore(CONV_STORE, { keyPath: 'uid_partner' });
-        convStore.createIndex('accountUuid', 'accountUuid', { unique: false });
 
         if (!db.objectStoreNames.contains(AVATAR_STORE)) {
           db.createObjectStore(AVATAR_STORE, { keyPath: 'url' });
@@ -95,14 +95,12 @@ export const contactCache = {
     });
   },
 
-  // Fix #3: 使用 accountUuid 索引代替全表扫描
   async getConversations(accountUuid: string) {
     const db = await this.init();
     return new Promise<any[]>((resolve) => {
       const transaction = db.transaction(CONV_STORE, 'readonly');
       const store = transaction.objectStore(CONV_STORE);
 
-      // 优先使用索引精确查找
       if (store.indexNames.contains('accountUuid')) {
         const index = store.index('accountUuid');
         const request = index.getAll(IDBKeyRange.only(accountUuid));
@@ -112,7 +110,6 @@ export const contactCache = {
         };
         request.onerror = () => resolve([]);
       } else {
-        // 降级：全表扫描（兼容旧 DB 版本，升级后不再走此分支）
         const request = store.getAll();
         request.onsuccess = () => {
           const filtered = (request.result || [])
@@ -126,25 +123,38 @@ export const contactCache = {
   },
 
   // --- 消息相关 ---
-  // --- 消息相关 ---
   async saveMessage(accountUuid: string, msg: any, maxMessagesPerConv = 500) {
     const db = await this.init();
     return new Promise<void>(async (resolve) => {
-      // 写入前检查该会话消息数，超过上限则淘汰最旧的
       await this._pruneMessages(db, accountUuid, msg.partnerId, maxMessagesPerConv);
 
       const transaction = db.transaction(MSG_STORE, 'readwrite');
       const store = transaction.objectStore(MSG_STORE);
+
+      // 自动补全 partnerType 如果缺失
+      if (!msg.partnerType) {
+        if (msg.partnerId?.endsWith('@chatroom')) {
+          msg.partnerType = 'chatroom';
+        } else {
+          const specialIds = ['fmessage', 'medianote', 'floatbottle', 'newsapp', 'helper_entry', 'filehelper'];
+          if (msg.partnerId?.startsWith('gh_') || specialIds.includes(msg.partnerId)) {
+            msg.partnerType = 'official';
+          } else {
+            msg.partnerType = 'individual';
+          }
+        }
+      }
+
       store.put({
         ...msg,
         accountUuid,
-        partnerId: msg.partnerId
+        partnerId: msg.partnerId,
+        partnerType: msg.partnerType
       });
       transaction.oncomplete = () => resolve();
     });
   },
 
-  // FIFO 淘汰旧消息，保持每会话不超过 maxMessagesPerConv 条
   async _pruneMessages(db: IDBDatabase, accountUuid: string, partnerId: string, maxMessagesPerConv = 500) {
     return new Promise<void>((resolve) => {
       const transaction = db.transaction(MSG_STORE, 'readwrite');
@@ -158,32 +168,30 @@ export const contactCache = {
           resolve();
           return;
         }
-        // 按时间排序，删除最旧的 (all.length - maxMessagesPerConv + 1) 条
         all.sort((a, b) => a.time - b.time);
         const toDelete = all.slice(0, all.length - maxMessagesPerConv + 1);
         toDelete.forEach(m => store.delete(m.id));
         transaction.oncomplete = () => resolve();
       };
-      request.onerror = () => resolve(); // 剪枝失败不阻塞写入
+      request.onerror = () => resolve();
     });
   },
 
-  // 统计已过期消息数
-  async getExpiredCount(accountUuid: string, ttlDays: number): Promise<number> {
-    if (!ttlDays || ttlDays <= 0) return 0;
+  async clearGroupMessages(accountUuid?: string) {
     const db = await this.init();
-    const expireTime = Date.now() - ttlDays * 24 * 60 * 60 * 1000;
     return new Promise<number>((resolve) => {
-      const transaction = db.transaction(MSG_STORE, 'readonly');
+      const transaction = db.transaction(MSG_STORE, 'readwrite');
       const store = transaction.objectStore(MSG_STORE);
-      const index = store.index('time');
-      const request = index.openCursor(IDBKeyRange.upperBound(expireTime));
+      const index = store.index('partnerType');
+      const request = index.openCursor(IDBKeyRange.only('chatroom'));
       let count = 0;
+
       request.onsuccess = (e: any) => {
         const cursor = e.target.result;
         if (cursor) {
           const msg = cursor.value;
-          if (msg.accountUuid === accountUuid) {
+          if (!accountUuid || msg.accountUuid === accountUuid) {
+            cursor.delete();
             count++;
           }
           cursor.continue();
@@ -191,105 +199,34 @@ export const contactCache = {
           resolve(count);
         }
       };
-      request.onerror = () => resolve(0);
     });
   },
 
-  // 统计超限消息数
-  async getExceededCount(accountUuid: string, maxMessagesPerConv: number): Promise<number> {
+  async clearOfficialMessages(accountUuid?: string) {
     const db = await this.init();
-    const conversations = await this.getConversations(accountUuid);
-    if (conversations.length === 0) return 0;
-
-    return new Promise<number>((resolve) => {
-      const transaction = db.transaction(MSG_STORE, 'readonly');
-      const store = transaction.objectStore(MSG_STORE);
-      const index = store.index('account_partner');
-      let exceededCount = 0;
-      let pending = conversations.length;
-
-      conversations.forEach(conv => {
-        const request = index.count(IDBKeyRange.only([accountUuid, conv.wxid]));
-        request.onsuccess = () => {
-          const count = request.result;
-          if (count > maxMessagesPerConv) {
-            exceededCount += (count - maxMessagesPerConv);
-          }
-          pending--;
-          if (pending === 0) {
-            resolve(exceededCount);
-          }
-        };
-        request.onerror = () => {
-          pending--;
-          if (pending === 0) {
-            resolve(exceededCount);
-          }
-        };
-      });
-    });
-  },
-
-  // 清理过期消息
-  async pruneExpiredMessages(accountUuid: string, ttlDays: number): Promise<number> {
-    if (!ttlDays || ttlDays <= 0) return 0;
-    const db = await this.init();
-    const expireTime = Date.now() - ttlDays * 24 * 60 * 60 * 1000;
     return new Promise<number>((resolve) => {
       const transaction = db.transaction(MSG_STORE, 'readwrite');
       const store = transaction.objectStore(MSG_STORE);
-      const index = store.index('time');
-      const request = index.openCursor(IDBKeyRange.upperBound(expireTime));
-      let deletedCount = 0;
+      const index = store.index('partnerType');
+      const request = index.openCursor(IDBKeyRange.only('official'));
+      let count = 0;
+
       request.onsuccess = (e: any) => {
         const cursor = e.target.result;
         if (cursor) {
           const msg = cursor.value;
-          if (msg.accountUuid === accountUuid) {
+          if (!accountUuid || msg.accountUuid === accountUuid) {
             cursor.delete();
-            deletedCount++;
+            count++;
           }
           cursor.continue();
+        } else {
+          resolve(count);
         }
       };
-      transaction.oncomplete = () => resolve(deletedCount);
-      transaction.onerror = () => resolve(0);
     });
   },
 
-  // 清理超限消息
-  async pruneExceededMessages(accountUuid: string, maxMessagesPerConv: number): Promise<number> {
-    const db = await this.init();
-    const conversations = await this.getConversations(accountUuid);
-    if (conversations.length === 0) return 0;
-    let totalDeleted = 0;
-
-    for (const conv of conversations) {
-      const deletedCount = await new Promise<number>((resolve) => {
-        const transaction = db.transaction(MSG_STORE, 'readwrite');
-        const store = transaction.objectStore(MSG_STORE);
-        const index = store.index('account_partner');
-        const request = index.getAll(IDBKeyRange.only([accountUuid, conv.wxid]));
-
-        request.onsuccess = () => {
-          const all: any[] = request.result || [];
-          if (all.length <= maxMessagesPerConv) {
-            resolve(0);
-            return;
-          }
-          all.sort((a, b) => a.time - b.time);
-          const toDelete = all.slice(0, all.length - maxMessagesPerConv);
-          toDelete.forEach(m => store.delete(m.id));
-          transaction.oncomplete = () => resolve(toDelete.length);
-        };
-        request.onerror = () => resolve(0);
-      });
-      totalDeleted += deletedCount;
-    }
-    return totalDeleted;
-  },
-
-  // Fix #4: 删除 fallback 全表扫描
   async getMessages(accountUuid: string, partnerId: string, limit = 50) {
     const db = await this.init();
     return new Promise<any[]>((resolve) => {
@@ -300,7 +237,6 @@ export const contactCache = {
 
       request.onsuccess = () => {
         const all = request.result || [];
-        // 取最新 limit 条（时间倒序取前 N，再正序返回）
         const sorted = all.sort((a, b) => b.time - a.time).slice(0, limit);
         resolve(sorted.sort((a, b) => a.time - b.time));
       };
@@ -440,7 +376,6 @@ export const contactCache = {
     }
   },
 
-
   formatSize(sizeInBytes: number): string {
     if (sizeInBytes < 1024) return `${sizeInBytes} B`;
     if (sizeInBytes < 1024 * 1024) return `${(sizeInBytes / 1024).toFixed(2)} KB`;
@@ -452,7 +387,7 @@ export const contactCache = {
     return new Promise((resolve) => {
       const transaction = db.transaction(storeName, 'readwrite');
       const store = transaction.objectStore(storeName);
-      
+
       if (accountUuid && store.indexNames.contains('accountUuid')) {
         const index = store.index('accountUuid');
         const request = index.openCursor(IDBKeyRange.only(accountUuid));
@@ -472,9 +407,6 @@ export const contactCache = {
     });
   },
 
-  /**
-   * 迁移账号数据 (用于 Token -> wxid 的身份转换)
-   */
   async migrateAccountData(oldUuid: string, newUuid: string) {
     if (!oldUuid || !newUuid || oldUuid === newUuid) return;
     const db = await this.init();
@@ -530,61 +462,6 @@ export const contactCache = {
     }
   },
 
-  // Fix #11: 使用索引精确删除群消息，传入 accountUuid 隔离
-  async clearGroupMessages(accountUuid?: string) {
-    const db = await this.init();
-    return new Promise<number>((resolve) => {
-      const transaction = db.transaction(MSG_STORE, 'readwrite');
-      const store = transaction.objectStore(MSG_STORE);
-      let count = 0;
-
-      // 尝试使用 account_partner 复合索引定向扫描（如无法直接枚举 chatroom，降级 cursor）
-      const request = store.openCursor();
-      request.onsuccess = (e: any) => {
-        const cursor = e.target.result;
-        if (cursor) {
-          const msg = cursor.value;
-          const belongsToAccount = !accountUuid || msg.accountUuid === accountUuid;
-          if (belongsToAccount && msg.partnerId?.endsWith('@chatroom')) {
-            cursor.delete();
-            count++;
-          }
-          cursor.continue();
-        } else {
-          resolve(count);
-        }
-      };
-    });
-  },
-
-  // Fix #11: 同上，按账号隔离清理公众号消息
-  async clearOfficialMessages(accountUuid?: string) {
-    const db = await this.init();
-    return new Promise<number>((resolve) => {
-      const transaction = db.transaction(MSG_STORE, 'readwrite');
-      const store = transaction.objectStore(MSG_STORE);
-      let count = 0;
-
-      const request = store.openCursor();
-      request.onsuccess = (e: any) => {
-        const cursor = e.target.result;
-        if (cursor) {
-          const msg = cursor.value;
-          const belongsToAccount = !accountUuid || msg.accountUuid === accountUuid;
-          const isOfficial = msg.partnerId?.startsWith('gh_') ||
-            ['fmessage', 'medianote', 'floatbottle'].includes(msg.partnerId);
-          if (belongsToAccount && isOfficial) {
-            cursor.delete();
-            count++;
-          }
-          cursor.continue();
-        } else {
-          resolve(count);
-        }
-      };
-    });
-  },
-
   async clearAll(accountUuid?: string) {
     if (!accountUuid) {
       const db = await this.init();
@@ -603,5 +480,4 @@ export const contactCache = {
       return true;
     }
   },
-
 };
