@@ -17,12 +17,15 @@ export const useChatStore = defineStore('chat', {
     get msgIdSet(): BoundedSet { return (this as any)._msgIdDedup; },
   }),
   actions: {
-    updateMessageImageUrl(userName: string, partnerId: string, msgId: string, newUrl: string) {
+    updateMessageImageUrl(userName: string, partnerId: string, msgId: string, newUrl: string, isBigImage = false) {
       if (this.accountMessages[userName]?.[partnerId]) {
         const msgs = this.accountMessages[userName][partnerId];
         const found = msgs.find(m => String(m.id) === String(msgId));
         if (found) {
           found.imageUrl = newUrl;
+          if (isBigImage) {
+            found.isBigImageLoaded = true;
+          }
         }
       }
     },

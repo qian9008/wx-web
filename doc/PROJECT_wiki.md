@@ -88,6 +88,7 @@ graph TD
     - `isSelf`: 是否本人发送
     - `partnerId`: 归属的对话伙伴 ID
     - `partnerType`: 伙伴类型 (`individual` | `chatroom` | `official`)
+    - `isBigImageLoaded`: 是否已成功拉取高清大图 (布尔值)
 *   `Conversation`: 会话摘要
     - `wxid`: 联系人唯一 ID
     - `nickname`: 显示名称
@@ -116,3 +117,6 @@ graph TD
 *   **索引清理优化**: 在 IndexedDB 的 `messages` 表中引入 `partnerType` 索引，使群消息和公众号消息的批量清理从“全表扫描”优化为“索引定向扫描”，显著提升性能。
 *   **二分插入有序流**: 消息进入内存 Store 时使用二分查找插入，确保消息流在内存中始终有序，且性能为 O(log n)。
 *   **多维链路自愈**: `SocketManager` 实现了基于浏览器事件的链路主动修复机制。通过监听 `visibilitychange` (页面可见性) 和 `online` (网络恢复)，解决了后台 Tab 节流导致的连接假死问题，通过“探测 + 补位同步”的双重保险确保消息不漏收。
+*   **微信大图分片渐进拉取**: 微信 Hook 的 `/message/GetMsgBigImg` 接口不支持单包返回全部超大图像。采用基于 `while` 循环分片迭代下载，在后续分片请求中透传首包返回的 `TotalLen` 保持请求合法，最后利用 `Uint8Array` 合并转化为 Base64 回写。
+*   **图片缩略图秒开与静默大图升级**: 在同步推送的 `img_buf` 提取缩略图 Base64 直接渲染，避免页面空白；当用户点击缩略图时，利用 Arco Design 的 `<a-image>` 立即弹窗放大预览缩略图，并在后台静默拉取高清大图替换，借助 Vue 响应式绑定使预览图无缝变清晰。
+*   **微信头像 404 自愈与 Redis 回写**: 微信头像 URL 在 CDN 上有 30 天时效性。当过期产生 404 导致破图时，前端组件 (气泡、列表等) 通过 `@error` 进行监听拦截，在后台静默拉取 `forceUpdateContactDetails` 好友最新资料。一旦后端返回并更新本地内存，新头像会自动响应式刷新。在 Redis 模式下，更新会自动通过防抖回写服务 (3秒防抖延迟) 推送保存到 Redis 缓存，实现了零感自愈。

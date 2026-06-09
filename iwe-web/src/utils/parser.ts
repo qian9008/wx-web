@@ -113,6 +113,12 @@ export class MessageParser {
           console.warn('[Parser] 图片 XML 解析失败', e);
         }
       }
+
+      // 提取内嵌缩略图数据（WS/实时消息推送自带缩略图）
+      const imgBuf = rawMsg.img_buf || rawMsg.ImgBuf;
+      if (imgBuf?.buffer && typeof imgBuf.buffer === 'string' && imgBuf.buffer.length > 10) {
+        msg.imageUrl = `data:image/jpeg;base64,${imgBuf.buffer}`;
+      }
     }
     else if (msgType === 34) {
       msg.type = 'voice';

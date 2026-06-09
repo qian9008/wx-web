@@ -16,6 +16,7 @@ export interface AppMessage {
   isRevoked: boolean;
   rawXml?: string;
   imageUrl?: string;
+  isBigImageLoaded?: boolean;
   statusNotifyData?: {
     username: string;
     lastMessageSvrId: string;

@@ -92,17 +92,26 @@ export const messageApi = {
   delContact: (license: string, username: string) => 
     request.post(`/friend/DelContact?key=${license}`, { DelUserName: username }),
 
-  getMsgBigImg: (license: string, fromUser: string, toUser: string, msgId: number, compressType = 0) => {
+  getMsgBigImg: (
+    license: string, 
+    fromUser: string, 
+    toUser: string, 
+    msgId: number, 
+    compressType = 0,
+    startPos = 0,
+    dataLen = 61440,
+    totalLen = 0
+  ) => {
     const payload = {
       CompressType: compressType,
       FromUserName: fromUser,
       MsgId: msgId,
       Section: {
-        DataLen: 61440,
-        StartPos: 0
+        DataLen: dataLen,
+        StartPos: startPos
       },
       ToUserName: toUser,
-      TotalLen: 0
+      TotalLen: totalLen
     };
     debugLog('request', '[GetMsgBigImg] 实际请求体: {}', () => JSON.stringify(payload, null, 2));
     return request.post(`/message/GetMsgBigImg?key=${license}`, payload);

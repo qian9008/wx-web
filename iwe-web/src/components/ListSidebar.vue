@@ -16,7 +16,7 @@
         >
           <a-badge :count="conv.unread" :dot="false" class="avatar-badge">
             <a-avatar :size="42" shape="square" :style="{ backgroundColor: '#ffb400' }">
-              <img v-if="getConvAvatar(conv)" :src="getConvAvatar(conv)" referrerpolicy="no-referrer" loading="lazy" />
+              <img v-if="getConvAvatar(conv)" :src="getConvAvatar(conv)" referrerpolicy="no-referrer" loading="lazy" @error="(e) => handleAvatarError(e, conv.wxid)" />
               <template v-else>{{ getConvName(conv) ? getConvName(conv)[0] : 'C' }}</template>
             </a-avatar>
           </a-badge>
@@ -67,13 +67,13 @@
               class="relation-badge"
             >
               <a-avatar :size="42" shape="square" :style="{ backgroundColor: '#337ecc' }">
-                <img v-if="visibleAvatars[getContactId(contact)] && accountStore.getContactAvatar(contact)" :src="accountStore.getContactAvatar(contact)" referrerpolicy="no-referrer" loading="lazy" />
+                <img v-if="visibleAvatars[getContactId(contact)] && accountStore.getContactAvatar(contact)" :src="accountStore.getContactAvatar(contact)" referrerpolicy="no-referrer" loading="lazy" @error="(e) => handleAvatarError(e, getContactId(contact))" />
                 <template v-else>{{ getContactName(contact)[0] }}</template>
               </a-avatar>
             </a-badge>
             <a-avatar v-else :size="42" shape="square" :style="{ backgroundColor: '#337ecc' }">
               <!-- 🚀 优化：只有当该联系人真正进入可见视口，才挂载 <img> 并发起网络请求加载头像 -->
-              <img v-if="visibleAvatars[getContactId(contact)] && accountStore.getContactAvatar(contact)" :src="accountStore.getContactAvatar(contact)" referrerpolicy="no-referrer" loading="lazy" />
+              <img v-if="visibleAvatars[getContactId(contact)] && accountStore.getContactAvatar(contact)" :src="accountStore.getContactAvatar(contact)" referrerpolicy="no-referrer" loading="lazy" @error="(e) => handleAvatarError(e, getContactId(contact))" />
               <template v-else>{{ getContactName(contact)[0] }}</template>
             </a-avatar>
             <div class="info">
@@ -96,7 +96,7 @@
           >
             <a-avatar :size="42" shape="square" :style="{ backgroundColor: '#337ecc' }">
               <!-- 🚀 优化：只有当该联系人真正进入可见视口，才挂载 <img> 并发起网络请求加载头像 -->
-              <img v-if="visibleAvatars[getContactId(contact)] && accountStore.getContactAvatar(contact)" :src="accountStore.getContactAvatar(contact)" referrerpolicy="no-referrer" loading="lazy" />
+              <img v-if="visibleAvatars[getContactId(contact)] && accountStore.getContactAvatar(contact)" :src="accountStore.getContactAvatar(contact)" referrerpolicy="no-referrer" loading="lazy" @error="(e) => handleAvatarError(e, getContactId(contact))" />
               <template v-else>{{ getContactName(contact)[0] }}</template>
             </a-avatar>
             <div class="info">
@@ -119,7 +119,7 @@
           >
             <a-avatar :size="42" shape="square" :style="{ backgroundColor: '#337ecc' }">
               <!-- 🚀 优化：只有当该联系人真正进入可见视口，才挂载 <img> 并发起网络请求加载头像 -->
-              <img v-if="visibleAvatars[getContactId(contact)] && accountStore.getContactAvatar(contact)" :src="accountStore.getContactAvatar(contact)" referrerpolicy="no-referrer" loading="lazy" />
+              <img v-if="visibleAvatars[getContactId(contact)] && accountStore.getContactAvatar(contact)" :src="accountStore.getContactAvatar(contact)" referrerpolicy="no-referrer" loading="lazy" @error="(e) => handleAvatarError(e, getContactId(contact))" />
               <template v-else>{{ getContactName(contact)[0] }}</template>
             </a-avatar>
             <div class="info">
@@ -148,6 +148,29 @@ const props = defineProps<{
   activeTab: 'chat' | 'contact';
   activeId: string;
 }>();
+
+// 正在进行头像静默更新的好友列表集合，防高频刷屏请求
+const updatingAvatarWxids = new Set<string>();
+
+const handleAvatarError = async (e: Event, wxid: string) => {
+  const img = e.target as HTMLImageElement;
+  // 1. 触发静默拉取好友详情以刷新头像
+  const selfWxid = accountStore.activeAccountUuid;
+  if (!wxid || wxid === 'filehelper' || wxid === selfWxid || updatingAvatarWxids.has(wxid)) return;
+
+  updatingAvatarWxids.add(wxid);
+  try {
+    console.log(`[ListAvatar:Error] 发现列表头像过期/404, 触发静默更新资料: ${wxid}`);
+    await accountStore.forceUpdateContactDetails(wxid);
+  } catch (err) {
+    console.warn(`[ListAvatar:Error] 列表头像自愈拉取资料失败: ${wxid}`, err);
+  } finally {
+    // 10秒去重缓冲
+    setTimeout(() => {
+      updatingAvatarWxids.delete(wxid);
+    }, 10000);
+  }
+};
 
 const emit = defineEmits<{
   (e: 'selectChat', wxid: string): void;
@@ -230,8 +253,7 @@ const getConvAvatar = (conv: any) => {
   if (rawUrl.startsWith('http://')) {
     rawUrl = rawUrl.replace('http://', 'https://');
   }
-  accountStore.getAvatarUrl(rawUrl);
-  return accountStore.avatarBlobMap[rawUrl] || rawUrl;
+  return rawUrl;
 };
 
 const formatTime = (t: number) => t ? dayjs(t * 1000).format('HH:mm') : '';

@@ -119,7 +119,6 @@ export const useAccountStore = defineStore('account', {
     syncLockMap: {} as Record<string, boolean>,
     accountContactMaps: {} as Record<string, Record<string, any>>,
     isContactListLoadedMap: {} as Record<string, boolean>,
-    avatarBlobMap: {} as Record<string, string>,
     _statusTimer: null as any
     };
   },

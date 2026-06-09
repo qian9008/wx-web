@@ -175,14 +175,6 @@ export async function forceUpdateContactDetails(store: AccountStoreInstance, use
 
     if (detail) {
       await updateContact(store, username, detail, targetUuid, false);
-
-      const url = detail.smallHeadImgUrl || detail.SmallHeadImgUrl || detail.headImgUrl || detail.HeadImgUrl || detail.avatar || '';
-      const rawUrl = typeof url === 'string' ? url.trim().replace(/\u0060/g, '') : '';
-      const isHttpUrl = rawUrl.startsWith('http://') || rawUrl.startsWith('https://');
-      if (rawUrl && isHttpUrl) {
-        await getAvatarUrl(rawUrl);
-      }
-
       return detail;
     } else {
       throw new Error('接口未返回有效的联系人详情');

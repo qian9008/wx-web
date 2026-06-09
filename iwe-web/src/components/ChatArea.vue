@@ -19,6 +19,7 @@
           :partner-name="partnerName"
           :playing-voice-id="playingVoiceId"
           :downloading-voice-ids="downloadingVoiceIds"
+          :active-account-uuid="activeAccountUuid"
           @play-voice="handlePlayVoice"
         />
       </div>
