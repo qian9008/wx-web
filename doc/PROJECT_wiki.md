@@ -17,8 +17,9 @@
 ## 2. “公共轮子”清单
 ### 核心工具 (Utils)
 *   `request.ts`: 基于 Axios 封装，自动注入 `key` 参数，处理 `Code/Data` 响应外壳。
+*   `debug.ts`: 调试开关与内置日志面板工具，提供 `debugLog/debugWarn/debugError` 延迟日志函数；昂贵日志内容应使用 lambda，确保 debug 关闭时不生成日志内容。
 *   `contactCache.ts`: **核心持久化方案**，基于 IndexedDB 封装，支持过期清理 (TTL) 和基于 `partnerType` 索引的高效批量清理。
-*   `socketManager.ts`: WebSocket 连接生命周期管理器，负责重连、补位轮询和历史补录调度。
+*   `socketManager.ts`: **链路自愈管理器**。采用全局单例模式监听 `online` 和 `visibilitychange` 事件。当用户切回页面或网络恢复时，统一指挥所有连接进行心跳探测或强制重连，并触发 HTTP 补位轮询。
 *   `messageDispatcher.ts`: **消息分发枢纽**，负责原始协议特征识别、消息类型判定及业务逻辑路由。
 *   `structures.ts`: 通用数据结构工具，如 `BoundedSet` (有界去重集合) 和 `binaryInsert` (二分插入算法)。
 *   `parser.ts`: 消息内容解析器（XML/JSON 转换）。
@@ -26,8 +27,58 @@
 
 ### 业务钩子 (Hooks/Composables)
 *   `useVoicePlayer.ts`: 处理 SILK 等音频格式的解码与播放逻辑。
+## 3. 业务流向全景 (Data Flow)
 
-## 3. 数据结构/变量字典
+```mermaid
+graph TD
+    %% 外部数据源
+    subgraph External_Sources [外部数据源]
+        WS[WebSocket /GetSyncMsg]
+        HTTP[HTTP /syncMsg /syncHistory]
+    end
+
+    %% 核心处理层
+    subgraph Processing_Layer [核心处理与分发]
+        SM[SocketManager: 连接管理与重连]
+        MD[MessageDispatcher: 协议解析与业务路由]
+        PS[Parser: XML/JSON 内容转换]
+    end
+
+    %% 存储与状态
+    subgraph Storage_Layer [数据持久化与状态管理]
+        AS[AccountStore: 账号/联系人状态]
+        CS[ChatStore: 消息/会话内存快照]
+        IDB[(IndexedDB: iwe_cache)]
+        RD[(Redis: 极速模式可选)]
+    end
+
+    %% UI 展示
+    subgraph UI_Layer [四栏式布局展示]
+        LS[LeftSidebar: 账号/功能导航]
+        LIS[ListSidebar: 会话列表]
+        CA[ChatArea: 消息流渲染]
+    end
+
+    %% 流转关系
+    WS -->|原始消息| SM
+    HTTP -->|补录消息| SM
+    SM -->|分发| MD
+    MD -->|内容解析| PS
+    MD -->|更新资料| AS
+    MD -->|持久化| IDB
+    MD -->|极速写入| RD
+    MD -->|状态流转| CS
+
+    IDB -.->|冷启动加载| CS
+    IDB -.->|缓存读取| AS
+    
+    AS --- LS
+    CS --- LIS
+    CS --- CA
+    CA -->|发送消息| HTTP
+```
+
+## 4. 数据结构/变量字典
 ### 核心数据模型 (Types: `src/types/chat.ts`)
 *   `AppMessage`: 消息对象
     - `id`: 唯一标识 (字符串)
@@ -64,3 +115,4 @@
 *   **分发器解耦**: `SocketManager` 只负责连接维护，具体的消息预处理、联系人同步拦截、去重、解析分发全部交由 `MessageDispatcher` 处理。
 *   **索引清理优化**: 在 IndexedDB 的 `messages` 表中引入 `partnerType` 索引，使群消息和公众号消息的批量清理从“全表扫描”优化为“索引定向扫描”，显著提升性能。
 *   **二分插入有序流**: 消息进入内存 Store 时使用二分查找插入，确保消息流在内存中始终有序，且性能为 O(log n)。
+*   **多维链路自愈**: `SocketManager` 实现了基于浏览器事件的链路主动修复机制。通过监听 `visibilitychange` (页面可见性) 和 `online` (网络恢复)，解决了后台 Tab 节流导致的连接假死问题，通过“探测 + 补位同步”的双重保险确保消息不漏收。

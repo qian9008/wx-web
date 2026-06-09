@@ -285,10 +285,15 @@ watch(() => accountStore.activeAccountUuid, async (newUuid) => {
     // 统一使用 userName 作为唯一标识（uuid === userName === 真实微信 ID）
     const userName = newUuid;
     
-    await Promise.all([
-      accountStore.loadContactsFromCache(userName),
-      chatStore.loadConversations(userName)
-    ]);
+    // 仅在内存中无缓存时才发起读取，杜绝切换账号时重合读取 IndexedDB 产生的竞态条件与开销
+    const hasContacts = accountStore.accountContactMaps[userName] && Object.keys(accountStore.accountContactMaps[userName]).length > 0;
+    const hasConvs = chatStore.accountConversations[userName] && chatStore.accountConversations[userName].length > 0;
+    if (!hasContacts || !hasConvs) {
+      await Promise.all([
+        accountStore.loadContactsFromCache(userName),
+        chatStore.loadConversations(userName)
+      ]);
+    }
   }
 }, { immediate: true });
 

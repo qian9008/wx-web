@@ -4,6 +4,7 @@ import { messageApi } from '@/api/modules/im';
 import { Message } from '@arco-design/web-vue';
 import { useAccountStore } from '@/store/account';
 import { useChatStore } from '@/store/chat';
+import { debugLog } from '@/utils/debug';
 
 export function useVoicePlayer(
   activeAccountUuid: () => string,
@@ -151,7 +152,7 @@ export function useVoicePlayer(
     const bytes = new Uint8Array(arrayBuffer);
     const silkMagic = [0x23, 0x21, 0x53, 0x49, 0x4c, 0x4b, 0x5f, 0x56, 0x33]; // #!SILK_V3
     
-    console.log('[silk-wasm] 原始数据前 16 字节 (Hex):', Array.from(bytes.subarray(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' '));
+    debugLog('parser', '[silk-wasm] 原始数据前 16 字节 (Hex): {}', () => Array.from(bytes.subarray(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' '));
 
     let magicIdx = -1;
     const searchRange = Math.min(256, bytes.length - silkMagic.length);
@@ -175,10 +176,10 @@ export function useVoicePlayer(
       const hasWechatPrefix = magicIdx > 0 && bytes[magicIdx - 1] === 0x02;
       const startIdx = hasWechatPrefix ? magicIdx - 1 : magicIdx;
       
-      console.log(`[silk-wasm] 定位到 SILK 魔数，起始位置: ${magicIdx}, 微信 0x02 前缀: ${hasWechatPrefix ? '是' : '否'}`);
+      debugLog('parser', '[silk-wasm] 定位到 SILK 魔数，起始位置: {}, 微信 0x02 前缀: {}', magicIdx, hasWechatPrefix ? '是' : '否');
       
       if (startIdx > 0) {
-        console.log(`[silk-wasm] 成功裁剪头部 ${startIdx} 字节的填充或前缀数据`);
+        debugLog('parser', '[silk-wasm] 成功裁剪头部 {} 字节的填充或前缀数据', startIdx);
         activeBytes = bytes.subarray(startIdx);
       }
     } else {
@@ -191,14 +192,14 @@ export function useVoicePlayer(
         }
       }
       if (firstNonZero > 0 && (bytes[firstNonZero] === 0x02 || bytes[firstNonZero] === 0x23)) {
-        console.log(`[silk-wasm] 兜底定位到首个有效非零字节，起始位置: ${firstNonZero}`);
+        debugLog('parser', '[silk-wasm] 兜底定位到首个有效非零字节，起始位置: {}', firstNonZero);
         activeBytes = bytes.subarray(firstNonZero);
       } else {
         console.warn('[silk-wasm] 未能在前部区域定位到 SILK 特征魔数头');
       }
     }
 
-    console.log('[silk-wasm] 最终传入解码器的数据前 16 字节 (Hex):', Array.from(activeBytes.subarray(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' '));
+    debugLog('parser', '[silk-wasm] 最终传入解码器的数据前 16 字节 (Hex): {}', () => Array.from(activeBytes.subarray(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' '));
 
     return activeBytes.buffer.slice(activeBytes.byteOffset, activeBytes.byteOffset + activeBytes.byteLength);
   };
@@ -238,7 +239,7 @@ export function useVoicePlayer(
     }
 
     if (prevPlayingId !== null) {
-      console.log(`[audio-stop] 成功停止语音播放 (ID: ${prevPlayingId})`);
+      debugLog('socket', '[audio-stop] 成功停止语音播放 (ID: {})', prevPlayingId);
     }
   };
 
@@ -252,11 +253,11 @@ export function useVoicePlayer(
 
     if (isSilk) {
       try {
-        console.log(`[silk-wasm] 开始解码并重采样 Silk 语音消息 (ID: ${msg.id})...`);
+        debugLog('parser', '[silk-wasm] 开始解码并重采样 Silk 语音消息 (ID: {})...', () => msg.id);
         const decodeBuf = preprocessSilkBuffer(arrayBuffer);
         const targetSampleRate = 24000;
         const decoded = await decode(decodeBuf, targetSampleRate);
-        console.log(`[silk-wasm] 解码成功！音频时长: ${decoded.duration}ms, 目标采样率: ${targetSampleRate}Hz`);
+        debugLog('parser', '[silk-wasm] 解码成功！音频时长: {}ms, 目标采样率: {}Hz', () => decoded.duration, targetSampleRate);
 
         const pcmData = decoded.data;
         let pcmBuffer = pcmData.buffer;
@@ -291,14 +292,14 @@ export function useVoicePlayer(
             playingVoiceId.value = null;
             activeAudioSource = null;
             activeAudioCtx = null;
-            console.log(`[silk-wasm] 语音播放自然结束 (ID: ${msg.id})`);
+            debugLog('parser', '[silk-wasm] 语音播放自然结束 (ID: {})', () => msg.id);
           }
         };
 
         activeAudioSource = source;
         playingVoiceId.value = msg.id;
         source.start(0);
-        console.log('[silk-wasm] 音频已成功送入设备，正在高保真播放中...');
+        debugLog('parser', '[silk-wasm] 音频已成功送入设备，正在高保真播放中...');
 
       } catch (err: any) {
         console.error('[silk-wasm] 解码播放失败，降级为直接下载:', err);
@@ -363,7 +364,7 @@ export function useVoicePlayer(
 
   // 播放或下载语音消息
   const handlePlayVoice = async (msg: any) => {
-    console.log('[handlePlayVoice] 触发播放语音，消息详情:', JSON.stringify({
+    debugLog('parser', '[handlePlayVoice] 触发播放语音，消息详情: {}', () => JSON.stringify({
       id: msg.id,
       type: msg.type,
       voiceBufId: msg.voiceBufId,
@@ -392,7 +393,7 @@ export function useVoicePlayer(
     }
 
     if (msg.voiceBuffer) {
-      console.log('[handlePlayVoice] 检测到实时内嵌语音数据，开始播放...', msg.voiceBuffer.length);
+      debugLog('parser', '[handlePlayVoice] 检测到实时内嵌语音数据，开始播放... {}', () => msg.voiceBuffer.length);
       const dataUrl = `data:audio/silk;base64,${msg.voiceBuffer}`;
       msg.voiceUrl = dataUrl;
       
@@ -411,7 +412,7 @@ export function useVoicePlayer(
       const license = activeAcc?.sessionKey || accountStore.tokenKey || activeAccountUuid();
       const { fromUser, toUser } = getMsgSenderReceiver(msg);
 
-      console.log(`[handlePlayVoice] 调用 GetMsgVoice: voiceBufId=${msg.voiceBufId || '0'}, fromUser=${fromUser}, toUser=${toUser}`);
+      debugLog('request', '[handlePlayVoice] 调用 GetMsgVoice: voiceBufId={}, fromUser={}, toUser={}', () => msg.voiceBufId || '0', fromUser, toUser);
 
       let res: any = await messageApi.getMsgVoice(
         license,
@@ -421,13 +422,13 @@ export function useVoicePlayer(
         msg.voiceLength || 0,
         String(msg.id)
       );
-      console.log('[handlePlayVoice] GetMsgVoice 响应预览:', JSON.stringify(res)?.slice(0, 300));
+      debugLog('request', '[handlePlayVoice] GetMsgVoice 响应预览: {}', () => JSON.stringify(res)?.slice(0, 300));
 
       const gotVoiceLength = res?.Data?.VoiceLength ?? res?.VoiceLength ?? -1;
-      console.log('[handlePlayVoice] GetMsgVoice 返回的 VoiceLength:', gotVoiceLength);
+      debugLog('request', '[handlePlayVoice] GetMsgVoice 返回的 VoiceLength: {}', gotVoiceLength);
 
       if (gotVoiceLength === 0 && msg.voiceCdnUrl && msg.voiceAesKey) {
-        console.log('[handlePlayVoice] GetMsgVoice 提示未在设备端缓存，准备降级至 CDN 下载...');
+        debugLog('request', '[handlePlayVoice] GetMsgVoice 提示未在设备端缓存，准备降级至 CDN 下载...');
         res = await messageApi.sendCdnDownload(
           license,
           msg.voiceAesKey,
@@ -435,7 +436,7 @@ export function useVoicePlayer(
           2,
           msg.voiceLength || 0
         );
-        console.log('[SendCdnDownload] CDN响应: RetCode=', res?.RetCode, 'TotalSize=', res?.TotalSize, 'FileData长度=', res?.FileData?.length);
+        debugLog('request', '[SendCdnDownload] CDN响应: RetCode={}, TotalSize={}, FileData长度={}', () => res?.RetCode, () => res?.TotalSize, () => res?.FileData?.length);
       }
 
       const voiceUrl = parseVoiceDownloadResult(res);

@@ -8,6 +8,7 @@ import { messageApi } from '@/api/modules/im';
 import { isRedisMode } from './profile';
 import { triggerDebouncedRedisWriteback, syncViaRedis } from './redis';
 import { getAvatarUrl } from './utils';
+import { debugLog } from '@/utils/debug';
 
 type AccountStoreInstance = ReturnType<typeof useAccountStore>;
 
@@ -17,7 +18,7 @@ export async function loadContactsFromCache(store: AccountStoreInstance, account
 
   if (store.accountContactMaps[targetUuid] && Object.keys(store.accountContactMaps[targetUuid]).length > 0) {
     if (store.debug.cache) {
-      console.log("[AccountStore] 命中内存缓存，跳过 DB 读取联系人 (账号: " + targetUuid + ")");
+      debugLog('cache', '[AccountStore] 命中内存缓存，跳过 DB 读取联系人 (账号: {})', targetUuid);
     }
     return;
   }
@@ -32,7 +33,7 @@ export async function loadContactsFromCache(store: AccountStoreInstance, account
   });
 
   store.accountContactMaps[targetUuid] = map;
-  console.log("[AccountStore] 从 DB 加载了 " + Object.keys(map).length + " 个联系人 (账号: " + targetUuid + ")");
+  debugLog('cache', '[AccountStore] 从 DB 加载了 {} 个联系人 (账号: {})', () => Object.keys(map).length, targetUuid);
 }
 
 export async function updateContact(
@@ -72,7 +73,7 @@ export async function updateContact(
       ).filter(Boolean);
 
       if (memberWxids.length > 0) {
-        console.log("[AccountStore] 发现群 " + wxid + " 成员列表 (" + memberWxids.length + "人)，加入静默占位...");
+        debugLog('cache', '[AccountStore] 发现群 {} 成员列表 ({}人)，加入静默占位...', wxid, () => memberWxids.length);
         memberWxids.forEach((mId: string) => {
           if (!store.accountContactMaps[targetUuid][mId]) {
             store.accountContactMaps[targetUuid][mId] = { wxid: mId, isPlaceholder: true };
@@ -121,7 +122,7 @@ export async function checkFriendRelation(store: AccountStoreInstance, username:
 
   try {
     const res: any = await messageApi.getFriendRelation(key, username);
-    console.log("[AccountStore] checkFriendRelation 结果:", res);
+    debugLog('request', '[AccountStore] checkFriendRelation 结果:', () => res);
 
     const relation = res?.FriendRelation !== undefined ? res.FriendRelation : -1;
     const sign = res?.Sign || '';
@@ -156,7 +157,7 @@ export async function forceUpdateContactDetails(store: AccountStoreInstance, use
 
   try {
     const res: any = await messageApi.getContactDetailsList(key, [username]);
-    console.log("[AccountStore] forceUpdateContactDetails 结果:", res);
+    debugLog('request', '[AccountStore] forceUpdateContactDetails 结果:', () => res);
 
     let detailList: any[] = [];
     if (Array.isArray(res)) detailList = res;
@@ -204,7 +205,7 @@ export async function deleteContact(store: AccountStoreInstance, username: strin
 
   try {
     const res: any = await messageApi.delContact(key, username);
-    console.log("[AccountStore] deleteContact 结果:", res);
+    debugLog('request', '[AccountStore] deleteContact 结果:', () => res);
 
     if (store.accountContactMaps[targetUuid]) {
       delete store.accountContactMaps[targetUuid][username];
@@ -231,7 +232,7 @@ export async function deleteContact(store: AccountStoreInstance, username: strin
 
 export async function syncFullContactList(store: AccountStoreInstance, uuid: string, key: string, force = false) {
   if (store.isDemoMode) {
-    console.log("[AccountStore:Demo] 演示模式跳过真实好友同步 (账号: " + uuid + ")");
+    debugLog('cache', '[AccountStore:Demo] 演示模式跳过真实好友同步 (账号: {})', uuid);
     return;
   }
   if (store.syncLockMap[uuid]) return;
@@ -239,23 +240,23 @@ export async function syncFullContactList(store: AccountStoreInstance, uuid: str
   store.syncLockMap[uuid] = true;
   try {
     if (isRedisMode(store, uuid)) {
-      console.log("[AccountStore] 账号 " + uuid + " 已启用 Redis 极速模式，走 Redis 同步路径");
+      debugLog('cache', '[AccountStore] 账号 {} 已启用 Redis 极速模式，走 Redis 同步路径', uuid);
       await syncViaRedis(store, uuid, key);
       store.syncLockMap[uuid] = false;
       return;
     }
 
-    console.log("[AccountStore] 开始全量同步检查 (账号: " + uuid + ", 强制: " + force + ")");
+    debugLog('cache', '[AccountStore] 开始全量同步检查 (账号: {}, 强制: {})', uuid, force);
 
     const currentDbCount = await contactCache.getCount('contacts', uuid);
     if (!force && currentDbCount > 0) {
-      console.log("[AccountStore] 账号 " + uuid + " 本地已有联系人 (" + currentDbCount + "个), 跳过自动 API 同步");
+      debugLog('cache', '[AccountStore] 账号 {} 本地已有联系人 ({}个), 跳过自动 API 同步', uuid, currentDbCount);
       await loadContactsFromCache(store, uuid);
       store.syncLockMap[uuid] = false;
       return;
     }
 
-    console.log("[AccountStore] 本地无联系人或强制同步，开始调用接口获取 (账号: " + uuid + ")");
+    debugLog('cache', '[AccountStore] 本地无联系人或强制同步，开始调用接口获取 (账号: {})', uuid);
 
     let apiTotalCount = 0;
     try {
@@ -265,7 +266,7 @@ export async function syncFullContactList(store: AccountStoreInstance, uuid: str
       const friendList = friendData.friendList || [];
 
       if (friendList.length > 0) {
-        console.log("[AccountStore] GetFriendList 成功拉取 " + friendList.length + " 个好友详情 (API 总数: " + apiTotalCount + ")");
+        debugLog('cache', '[AccountStore] GetFriendList 成功拉取 {} 个好友详情 (API 总数: {})', () => friendList.length, apiTotalCount);
         for (const f of friendList) {
           const wxid = f.userName?.str || f.UserName?.str || f.wxid || f.userName || f.UserName;
           if (wxid) {
@@ -323,7 +324,7 @@ export async function syncFullContactList(store: AccountStoreInstance, uuid: str
                            (contactListData.continueFlag !== undefined ? contactListData.continueFlag :
                            (contactListData.ContinueFlag !== undefined ? contactListData.ContinueFlag : 0)));
 
-      console.log("[AccountStore] GetContactList 翻页: version(" + currentContactSeq + " -> " + nextContactSeq + "), continueFlag: " + continueFlag + ", 本页获取: " + userList.length);
+      debugLog('cache', '[AccountStore] GetContactList 翻页: version({} -> {}), continueFlag: {}, 本页获取: {}', currentContactSeq, nextContactSeq, continueFlag, () => userList.length);
 
       if (continueFlag === 1) {
         currentContactSeq = nextContactSeq;
@@ -331,7 +332,7 @@ export async function syncFullContactList(store: AccountStoreInstance, uuid: str
 
         if (newWxids.length >= 50) {
           newWxids.splice(0, newWxids.length);
-          console.log("[AccountStore] 已存入 50 个联系人占位符...");
+          debugLog('cache', '[AccountStore] 已存入 50 个联系人占位符...');
         }
 
         await new Promise(r => setTimeout(r, 100));
@@ -342,7 +343,7 @@ export async function syncFullContactList(store: AccountStoreInstance, uuid: str
 
     store.lastSyncTimeMap[uuid] = Date.now();
     store.isContactListLoadedMap[uuid] = true;
-    console.log("[AccountStore] 通讯录索引同步完成 (账号: " + uuid + ")");
+    debugLog('cache', '[AccountStore] 通讯录索引同步完成 (账号: {})', uuid);
   } catch (err) {
     console.error('同步流程异常:', err);
   } finally {

@@ -1,5 +1,5 @@
 import ReconnectingWebSocket from 'reconnecting-websocket';
-import { isDebug } from '@/utils/debug';
+import { debugLog, isDebug } from '@/utils/debug';
 
 export class IMService {
   private ws: ReconnectingWebSocket | null = null;
@@ -7,39 +7,60 @@ export class IMService {
   private onMessageCallback: (msg: any) => void;
   // Fix #7: 断开时回调，用于通知 SocketManager 立即发起一次轮询补位
   private onDisconnectCallback: (() => void) | null = null;
+  private onReconnectCallback: (() => void) | null = null;
   public accountUuid: string;
   public isConnected = false;
   public isConnecting = false;
   private heartbeatTimer: any = null;
   private heartbeatTimeoutTimer: any = null;
+  private lastKey: string = '';
 
-  private readonly PING_INTERVAL = 25000; // 25秒发送一次 ping
+  private readonly PING_INTERVAL = 15000; // 缩短至 15 秒发送一次 ping
   private readonly PONG_TIMEOUT = 10000;  // 10秒内未收到 pong 则视为超时
 
   constructor(
     accountUuid: string,
     url: string,
     onMessage: (msg: any) => void,
-    onDisconnect?: () => void
+    onDisconnect?: () => void,
+    onReconnect?: () => void
   ) {
     this.accountUuid = accountUuid;
     this.url = url;
     this.onMessageCallback = onMessage;
     this.onDisconnectCallback = onDisconnect || null;
+    this.onReconnectCallback = onReconnect || null;
+    // 不再在这里 init，改由 socketManager 统一管理
+  }
+
+  public reconnectWithLastKey() {
+    if (this.lastKey) {
+      debugLog('socket', '🔄 [{}] 使用最后一次 Key 尝试重连...', () => this.accountUuid);
+      this.ws?.reconnect();
+    }
   }
 
   public connect(key: string) {
+    this.lastKey = key;
     const wsUrl = `${this.url}?key=${key}`;
-    console.log(`[${this.accountUuid}] 正在建立 WebSocket 连接...`);
+    debugLog('socket', '[{}] 正在建立 WebSocket 连接...', () => this.accountUuid);
     this.isConnecting = true;
 
-    this.ws = new ReconnectingWebSocket(wsUrl);
+    this.ws = new ReconnectingWebSocket(wsUrl, [], {
+      connectionTimeout: 5000,
+      maxRetries: 10
+    });
 
     this.ws.onopen = () => {
+      const wasDisconnected = !this.isConnected;
       this.isConnected = true;
       this.isConnecting = false;
-      console.log(`✅ [${this.accountUuid}] WebSocket 成功建立连接`);
+      debugLog('socket', '✅ [{}] WebSocket 成功建立连接', () => this.accountUuid);
       this.startHeartbeat();
+
+      if (wasDisconnected) {
+        this.onReconnectCallback?.();
+      }
     };
 
     this.ws.onclose = (event) => {
@@ -95,12 +116,16 @@ export class IMService {
     this.stopHeartbeat();
     this.clearPongTimeout();
     this.heartbeatTimer = setInterval(() => {
-      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        if (isDebug('socket')) console.log(`[${this.accountUuid}] 发送心跳 ping...`);
-        this.ws.send('ping');
-        this.startPongTimeout();
-      }
+      this.sendPing();
     }, this.PING_INTERVAL);
+  }
+
+  public sendPing() {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      if (isDebug('socket')) console.log(`[${this.accountUuid}] 发送心跳 ping...`);
+      this.ws.send('ping');
+      this.startPongTimeout();
+    }
   }
 
   private stopHeartbeat() {

@@ -1,4 +1,5 @@
 import request from '@/utils/request';
+import { debugLog } from '@/utils/debug';
 
 export const loginApi = {
   getQrCode: (key?: string) => request.post(`/login/GetLoginQrCodeNewX${key ? `?key=${key}` : ''}`, {}),
@@ -103,7 +104,7 @@ export const messageApi = {
       ToUserName: toUser,
       TotalLen: 0
     };
-    console.log('[GetMsgBigImg] 实际请求体:', JSON.stringify(payload, null, 2));
+    debugLog('request', '[GetMsgBigImg] 实际请求体: {}', () => JSON.stringify(payload, null, 2));
     return request.post(`/message/GetMsgBigImg?key=${license}`, payload);
   },
 
@@ -115,7 +116,7 @@ export const messageApi = {
       NewMsgId: newMsgId,
       ToUserName: toUser
     };
-    console.log('[GetMsgVoice] 实际请求体:', JSON.stringify(payload, null, 2));
+    debugLog('request', '[GetMsgVoice] 实际请求体: {}', () => JSON.stringify(payload, null, 2));
     return request.post(`/message/GetMsgVoice?key=${license}`, payload);
   },
 
@@ -130,7 +131,7 @@ export const messageApi = {
       payload.TotalSize = fileSize;
       payload.SrcSize = fileSize;
     }
-    console.log('[SendCdnDownload] 实际请求体:', JSON.stringify(payload, null, 2));
+    debugLog('request', '[SendCdnDownload] 实际请求体: {}', () => JSON.stringify(payload, null, 2));
     return request.post(`/message/SendCdnDownload?key=${license}`, payload);
   },
 

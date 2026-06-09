@@ -25,3 +25,4 @@ tmp/
 .vscode/
 *.swp
 redis.json
+.codegraph/daemon.pid

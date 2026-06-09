@@ -8,6 +8,9 @@ interface DebugConfig {
   parser: boolean;
 }
 
+export type DebugModule = Exclude<keyof DebugConfig, 'all'>;
+type LazyDebugArg = unknown | (() => unknown);
+
 // 🚀 在 window 对象上挂载全局唯一的配置，彻底击碎打包环境中由“模块多实例”引起的配置状态分裂死穴！
 const getGlobalConfig = (): DebugConfig => {
   if (typeof window !== 'undefined') {
@@ -58,10 +61,48 @@ export const syncDebugConfig = (newConfig?: Partial<DebugConfig>) => {
 syncDebugConfig();
 
 // 优化后的极速 isDebug 检测，直接利用全局 window 内存镜像进行 O(1) 判定
-export const isDebug = (module: 'socket' | 'request' | 'cache' | 'parser'): boolean => {
+export const isDebug = (module: DebugModule): boolean => {
   const globalConf = getGlobalConfig();
   // 🔴 强力总阀门（电闸）逻辑：总开关 (All) 关闭时，一切调试断电静默，isDebug 必为 false！
   return !!(globalConf.all && globalConf[module]);
+};
+
+const resolveLazyArgs = (args: LazyDebugArg[]) => {
+  return args.map(arg => typeof arg === 'function' ? (arg as () => unknown)() : arg);
+};
+
+const formatDebugTemplate = (template: string, args: unknown[]) => {
+  let index = 0;
+  const text = template.replace(/\{\}/g, () => {
+    const value = args[index++];
+    return typeof value === 'string' ? value : String(value);
+  });
+  return index < args.length ? [text, ...args.slice(index)] : [text];
+};
+
+const emitDebug = (
+  level: 'log' | 'warn' | 'error',
+  module: DebugModule,
+  template: string,
+  args: LazyDebugArg[]
+) => {
+  if (!isDebug(module)) return;
+
+  const resolvedArgs = resolveLazyArgs(args);
+  const outputArgs = formatDebugTemplate(template, resolvedArgs);
+  console[level](...outputArgs);
+};
+
+export const debugLog = (module: DebugModule, template: string, ...args: LazyDebugArg[]) => {
+  emitDebug('log', module, template, args);
+};
+
+export const debugWarn = (module: DebugModule, template: string, ...args: LazyDebugArg[]) => {
+  emitDebug('warn', module, template, args);
+};
+
+export const debugError = (module: DebugModule, template: string, ...args: LazyDebugArg[]) => {
+  emitDebug('error', module, template, args);
 };
 
 // --- 内置控制台日志拦截捕获机制 ---

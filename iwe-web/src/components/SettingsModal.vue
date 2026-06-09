@@ -718,12 +718,11 @@ const handleAdminAction = async (type: string) => {
       Message.success('获取成功');
     } else if (type === 'setCallback') {
       if (!adminAuthKey.value) return Message.warning('请输入授权码');
-      if (!adminCallbackUrl.value) return Message.warning('请输入回调地址');
       const key = baseConfigForm.adminKey || accountStore.adminKey;
       if (!key) return Message.warning('管理密钥 (ADMIN_KEY) 不能为空');
-      res = await adminApi.setCallBackUrl(key, { 
+      res = await adminApi.setCallBackUrl(key, {
         Key: adminAuthKey.value,
-        Url: adminCallbackUrl.value
+        Url: adminCallbackUrl.value || ''
       });
       Message.success('设置成功');
     }
